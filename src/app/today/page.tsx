@@ -1,27 +1,17 @@
 "use client";
 
-import { useState } from "react";
 import { PageHeader } from "@/components/page-header";
+import { ConfigurationBanner } from "@/components/configuration-banner";
 import { DecisionCard } from "@/components/decision-card";
 import { demoRecommendations, demoWhatChangedToday } from "@/lib/demo";
-import { Sparkles, Clock, ArrowRight, ShieldCheck, RefreshCw, Zap, Flame } from "lucide-react";
+import { Clock, RefreshCw, Flame } from "lucide-react";
 
 export default function TodayPage() {
-  const [refreshing, setRefreshing] = useState(false);
-  const [lastRefreshed, setLastRefreshed] = useState("Just now");
-
-  const handleRefresh = () => {
-    setRefreshing(true);
-    setTimeout(() => {
-      setRefreshing(false);
-      setLastRefreshed("Just now");
-    }, 1200);
-  };
-
   return (
     <>
+      <ConfigurationBanner />
       <PageHeader
-        eyebrow="Saturday · Intelligence Current"
+        eyebrow="Demo snapshot · intelligence preview"
         title="Three moves matter today."
         description="The daily brief is a decision delta, not a news feed. Every action carries a score, confidence, freshness, and evidence trail."
       />
@@ -69,8 +59,8 @@ export default function TodayPage() {
 
         <button
           type="button"
-          onClick={handleRefresh}
-          disabled={refreshing}
+          disabled
+          title="Connect a league to enable refresh"
           style={{
             display: "inline-flex",
             alignItems: "center",
@@ -82,11 +72,12 @@ export default function TodayPage() {
             fontWeight: 700,
             fontSize: 13,
             border: 0,
-            cursor: "pointer",
+            cursor: "not-allowed",
+            opacity: 0.7,
           }}
         >
-          <RefreshCw size={14} className={refreshing ? "spin" : ""} />
-          <span>{refreshing ? "Syncing Scout..." : "Refresh Intelligence"}</span>
+          <RefreshCw size={14} />
+          <span>Refresh requires setup</span>
         </button>
       </section>
 
@@ -107,7 +98,7 @@ export default function TodayPage() {
             </h2>
           </div>
           <span className="pill">
-            <Clock size={13} /> Updated {lastRefreshed}
+            <Clock size={13} /> Demo snapshot
           </span>
         </div>
 

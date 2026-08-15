@@ -10,13 +10,13 @@ export async function GET() {
   } catch (error) {
     return NextResponse.json(
       {
-        utilization: 0,
+        utilization: null,
         cap: 60,
         isThrottled: false,
-        activeModel: "qwen/qwen3-coder-30b",
-        recommendedModel: "qwen/qwen3-coder-30b",
-        inUseMemoryMb: 0,
-        allocatedMemoryMb: 0,
+        activeModel: "unavailable",
+        recommendedModel: "unavailable",
+        inUseMemoryMb: null,
+        allocatedMemoryMb: null,
         timestamp: new Date().toISOString(),
         error: String(error),
       },

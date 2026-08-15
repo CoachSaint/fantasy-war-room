@@ -131,7 +131,7 @@ export const news: NewsAdapter = {
   extractEvidence,
   deduplicate,
 
-  async search(input: NewsSearchInput): Promise<Evidence[]> {
+  async search(): Promise<Evidence[]> {
     return [];
   },
 };

@@ -1,22 +1,22 @@
 import { execSync } from "child_process";
 
 export interface GpuStats {
-  utilization: number;
+  utilization: number | null;
   cap: number;
   isThrottled: boolean;
   activeModel: string;
   recommendedModel: string;
-  inUseMemoryMb: number;
-  allocatedMemoryMb: number;
+  inUseMemoryMb: number | null;
+  allocatedMemoryMb: number | null;
   timestamp: string;
 }
 
 const GPU_CAP = 60; // 60% GPU Usage Cap as requested by user
 
 export function getGpuStats(): GpuStats {
-  let utilization = 0;
-  let inUseMemoryMb = 0;
-  let allocatedMemoryMb = 0;
+  let utilization: number | null = null;
+  let inUseMemoryMb: number | null = null;
+  let allocatedMemoryMb: number | null = null;
 
   try {
     const output = execSync("ioreg -r -c IOAccelerator", {
@@ -45,26 +45,24 @@ export function getGpuStats(): GpuStats {
     if (allocMatch) {
       allocatedMemoryMb = Math.round(parseInt(allocMatch[1], 10) / (1024 * 1024));
     }
-  } catch (e) {
-    // Fallback simulated utilization for dev environment if ioreg command fails
-    utilization = 18;
+  } catch {
+    // Vercel and non-macOS hosts do not expose this local macOS metric.
+    // Preserve an explicit unavailable value instead of fabricating telemetry.
   }
 
-  const isThrottled = utilization >= GPU_CAP;
-  
-  // High GPU usage (>60%) forces fallback to lightweight 4B model to keep system performant
-  const recommendedModel = isThrottled
-    ? "qwen/qwen3-4b-2507"
-    : "qwen/qwen3-coder-30b";
+  const isThrottled = utilization != null && utilization >= GPU_CAP;
+  const activeModel = process.env.OPENROUTER_API_KEY
+    ? "deepseek/deepseek-v4-pro"
+    : "unavailable";
 
   return {
     utilization,
     cap: GPU_CAP,
     isThrottled,
-    activeModel: recommendedModel,
-    recommendedModel,
-    inUseMemoryMb: inUseMemoryMb || 1024,
-    allocatedMemoryMb: allocatedMemoryMb || 20480,
+    activeModel,
+    recommendedModel: activeModel,
+    inUseMemoryMb,
+    allocatedMemoryMb,
     timestamp: new Date().toISOString(),
   };
 }

@@ -1,5 +1,6 @@
 import type { Evidence, PlayerSnapshot } from "@/lib/types";
 
+/** Raw fields shared by the nflverse CSV and JSON release assets. */
 export interface NflverseRawStat {
   player_id?: string;
   gsis_id?: string;
@@ -7,17 +8,21 @@ export interface NflverseRawStat {
   position?: string;
   recent_team?: string;
   team?: string;
-  season?: number;
-  week?: number;
-  fantasy_points_ppr?: number;
-  fantasy_points?: number;
-  snap_share?: number;
-  target_share?: number;
-  rush_share?: number;
-  red_zone_share?: number;
-  route_share?: number;
-  targets?: number;
-  carries?: number;
+  season?: number | string;
+  week?: number | string;
+  /** Actual fantasy points scored in the row's game/week. */
+  fantasy_points_ppr?: number | string;
+  fantasy_points?: number | string;
+  /** Optional projections supplied by a release or configured upstream. */
+  projected_points_ppr?: number | string;
+  projected_points?: number | string;
+  snap_share?: number | string;
+  target_share?: number | string;
+  rush_share?: number | string;
+  red_zone_share?: number | string;
+  route_share?: number | string;
+  targets?: number | string;
+  carries?: number | string;
 }
 
 export interface NflverseRawDepth {
@@ -26,9 +31,19 @@ export interface NflverseRawDepth {
   full_name?: string;
   player_name?: string;
   team?: string;
+  club_code?: string;
   depth_position?: string;
   depth_team?: number | string;
+  depth_chart_order?: number | string;
+  depth_rank?: number | string;
   position?: string;
+  /** Official nflverse depth-chart release fields. */
+  dt?: string;
+  pos_abb?: string;
+  pos_slot?: string;
+  pos_rank?: number | string;
+  season?: number | string;
+  week?: number | string;
 }
 
 export interface NflverseRawInjury {
@@ -37,9 +52,20 @@ export interface NflverseRawInjury {
   full_name?: string;
   player_name?: string;
   team?: string;
+  club_code?: string;
+  season?: number | string;
+  week?: number | string;
   report_status?: string;
   report_primary_injury?: string;
   practice_status?: string;
+  practice_participation?: string;
+  practice?: string;
+}
+
+/** Metadata makes it impossible for callers to mistake actuals for projections. */
+export interface NflverseSnapshot extends PlayerSnapshot {
+  actualPoints?: number;
+  projectionSource?: "projected" | "actual";
 }
 
 export interface NflverseAdapter {
@@ -50,35 +76,132 @@ export interface NflverseAdapter {
   parseInjuryReport(data: NflverseRawInjury[], season: number, week: number): Evidence[];
 }
 
+const DEFAULT_RELEASE_BASE = "https://github.com/nflverse/nflverse-data/releases/download";
+
+/**
+ * Build an official release-asset URL. The base is configurable for mirrors and
+ * deterministic tests, while never falling back to the obsolete master tree.
+ */
+export function nflverseReleaseAssetUrl(tag: string, asset: string): string {
+  const configuredBase = typeof process !== "undefined"
+    ? process.env.NFLVERSE_RELEASE_BASE_URL
+    : undefined;
+  const base = (configuredBase || DEFAULT_RELEASE_BASE).replace(/\/+$/, "");
+  return `${base}/${encodeURIComponent(tag)}/${asset.split("/").map(encodeURIComponent).join("/")}`;
+}
+
+function numberValue(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim() !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function percentage(value: unknown): number | undefined {
+  const parsed = numberValue(value);
+  if (parsed == null) return undefined;
+  return Math.round((parsed <= 1 ? parsed * 100 : parsed));
+}
+
+function matchesSeasonWeek(row: { season?: unknown; week?: unknown }, season: number, week: number): boolean {
+  const rowSeason = numberValue(row.season);
+  const rowWeek = numberValue(row.week);
+  return rowSeason === season && rowWeek === week;
+}
+
+function csvRows(input: string): Record<string, string>[] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let quoted = false;
+
+  for (let i = 0; i < input.length; i += 1) {
+    const char = input[i];
+    if (quoted) {
+      if (char === '"' && input[i + 1] === '"') {
+        field += '"';
+        i += 1;
+      } else if (char === '"') {
+        quoted = false;
+      } else {
+        field += char;
+      }
+    } else if (char === '"') {
+      quoted = true;
+    } else if (char === ",") {
+      row.push(field);
+      field = "";
+    } else if (char === "\n") {
+      row.push(field.replace(/\r$/, ""));
+      if (row.some((value) => value !== "")) rows.push(row);
+      row = [];
+      field = "";
+    } else {
+      field += char;
+    }
+  }
+  row.push(field.replace(/\r$/, ""));
+  if (row.some((value) => value !== "")) rows.push(row);
+
+  const header = rows.shift() || [];
+  return rows.map((values) => Object.fromEntries(header.map((key, index) => [key, values[index] ?? ""])));
+}
+
+async function readReleaseAsset(url: string): Promise<unknown[]> {
+  const response = await fetch(url, { next: { revalidate: 3600 } });
+  if (!response.ok) return [];
+
+  // JSON is useful for local fixtures and mirrors; official releases are CSV.
+  const responseWithText = response as Response & { text?: () => Promise<string> };
+  if (typeof responseWithText.text === "function") {
+    const body = await responseWithText.text();
+    const trimmed = body.trim();
+    if (!trimmed) return [];
+    if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
+      const parsed: unknown = JSON.parse(trimmed);
+      return Array.isArray(parsed) ? parsed : [];
+    }
+    return csvRows(body);
+  }
+
+  const parsed: unknown = await response.json();
+  return Array.isArray(parsed) ? parsed : [];
+}
+
 export function parsePlayerStats(
   data: NflverseRawStat[],
   season: number,
   week: number
-): PlayerSnapshot[] {
+): NflverseSnapshot[] {
   const now = new Date().toISOString();
-  return data.map((row, idx) => {
+  return data.filter((row) => matchesSeasonWeek(row, season, week)).map((row, idx) => {
     const playerId = row.player_id || row.gsis_id || `nflv_player_${idx}`;
-    const ppg = row.fantasy_points_ppr ?? row.fantasy_points ?? 10.0;
-    const floor = Math.max(0, parseFloat((ppg * 0.65).toFixed(1)));
-    const ceiling = parseFloat((ppg * 1.45).toFixed(1));
-
-    return {
+    const actualPoints = numberValue(row.fantasy_points_ppr ?? row.fantasy_points);
+    const projectedPoints = numberValue(row.projected_points_ppr ?? row.projected_points);
+    const floor = projectedPoints == null ? undefined : Math.max(0, Number((projectedPoints * 0.65).toFixed(1)));
+    const ceiling = projectedPoints == null ? undefined : Number((projectedPoints * 1.45).toFixed(1));
+    const snapshot: NflverseSnapshot = {
       playerId,
-      week: row.week ?? week,
-      season: row.season ?? season,
-      projectedPoints: parseFloat(ppg.toFixed(1)),
+      week: numberValue(row.week) ?? week,
+      season: numberValue(row.season) ?? season,
+      projectedPoints: projectedPoints == null ? undefined : Number(projectedPoints.toFixed(1)),
       floor,
       ceiling,
-      snapShare: row.snap_share != null ? Math.round(row.snap_share * 100) : undefined,
-      routeShare: row.route_share != null ? Math.round(row.route_share * 100) : undefined,
-      targetShare: row.target_share != null ? Math.round(row.target_share * 100) : undefined,
-      rushShare: row.rush_share != null ? Math.round(row.rush_share * 100) : undefined,
-      redZoneShare: row.red_zone_share != null ? Math.round(row.red_zone_share * 100) : undefined,
-      injuryRisk: 10,
-      roleCertainty: 85,
-      matchupScore: 75,
+      snapShare: percentage(row.snap_share),
+      routeShare: percentage(row.route_share),
+      targetShare: percentage(row.target_share),
+      rushShare: percentage(row.rush_share),
+      redZoneShare: percentage(row.red_zone_share),
+      injuryRisk: undefined,
+      roleCertainty: undefined,
+      matchupScore: undefined,
       observedAt: now,
+      actualPoints,
+      projectionSource: projectedPoints == null ? (actualPoints == null ? undefined : "actual") : "projected",
     };
+    return snapshot;
   });
 }
 
@@ -87,26 +210,45 @@ export function parseDepthCharts(
   season: number,
   week: number
 ): Evidence[] {
-  const now = new Date().toISOString();
-  return data.map((row, idx) => {
+  const explicitWeekRows = data.filter((row) => numberValue(row.season) === season && numberValue(row.week) === week);
+  const datedSeasonRows = data.filter((row) => {
+    if (!row.dt || numberValue(row.week) != null) return false;
+    const date = new Date(`${row.dt}T00:00:00Z`);
+    if (Number.isNaN(date.getTime())) return false;
+    // NFL seasons begin in the named calendar year and can continue through
+    // February of the following year.
+    const month = date.getUTCMonth() + 1;
+    const inferredSeason = month <= 2 ? date.getUTCFullYear() - 1 : date.getUTCFullYear();
+    return inferredSeason === season;
+  });
+  const latestDate = datedSeasonRows.reduce<string | null>((latest, row) => !latest || String(row.dt) > latest ? String(row.dt) : latest, null);
+  const selectedRows = explicitWeekRows.length > 0
+    ? explicitWeekRows
+    : latestDate
+      ? datedSeasonRows.filter((row) => row.dt === latestDate)
+      : [];
+
+  return selectedRows.map((row, idx) => {
     const playerId = row.player_id || row.gsis_id || `nflv_player_${idx}`;
     const name = row.full_name || row.player_name || playerId;
-    const team = row.team || "NFL";
-    const pos = row.depth_position || row.position || "POS";
-    const depth = row.depth_team ?? 1;
-
-    const summary = `${name} listed as ${pos}${depth} on ${team} depth chart for Week ${week}.`;
-    const fingerprint = `depth_${playerId}_w${week}_d${depth}`;
+    const team = row.team || row.club_code || "NFL";
+    const pos = row.depth_position || row.position || row.pos_abb || row.pos_slot || "POS";
+    const depth = numberValue(row.depth_team ?? row.depth_chart_order ?? row.depth_rank ?? row.pos_rank);
+    const depthLabel = depth == null ? "unranked" : String(depth);
+    const publishedAt = row.dt ? new Date(`${row.dt}T00:00:00Z`).toISOString() : new Date().toISOString();
+    const period = row.dt ? `provider snapshot dated ${row.dt}` : `Week ${week}`;
+    const summary = `${name} listed as ${pos}${depthLabel === "unranked" ? "" : depthLabel} on ${team} depth chart (${period}).`;
+    const fingerprint = `depth_${playerId}_s${season}_${row.dt || `w${week}`}_d${depthLabel}`;
 
     return {
-      id: `ev_depth_${playerId}_w${week}_${idx}`,
+      id: `ev_depth_${playerId}_s${season}_w${week}_${idx}`,
       playerId,
       type: "depth_chart",
       source: "nflverse_depth_charts",
-      sourceUrl: `https://github.com/nflverse/nflverse-data/releases/tag/depth_charts`,
-      observedAt: now,
-      publishedAt: now,
-      confidence: 0.9,
+      sourceUrl: nflverseReleaseAssetUrl("depth_charts", `depth_charts_${season}.csv`),
+      observedAt: publishedAt,
+      publishedAt,
+      confidence: depth == null ? 0.8 : 0.9,
       summary,
       fingerprint,
     };
@@ -119,23 +261,26 @@ export function parseInjuryReport(
   week: number
 ): Evidence[] {
   const now = new Date().toISOString();
-  return data.map((row, idx) => {
+  return data.filter((row) => matchesSeasonWeek(row, season, week)).map((row, idx) => {
     const playerId = row.player_id || row.gsis_id || `nflv_player_${idx}`;
     const name = row.full_name || row.player_name || playerId;
-    const team = row.team || "NFL";
-    const status = row.report_status || row.practice_status || "Questionable";
+    const team = row.team || row.club_code || "NFL";
+    const status = row.report_status || "Unspecified";
+    const practice = row.practice_status || row.practice_participation || row.practice;
     const injury = row.report_primary_injury || "Undisclosed";
+    const practiceText = practice ? ` Practice participation: ${practice}.` : "";
 
-    const summary = `${name} (${team}) - Injury Status: ${status}. Detail: ${injury}.`;
-    const fingerprint = `injury_${playerId}_w${week}_${status.toLowerCase().replace(/\s+/g, "_")}`;
+    const summary = `${name} (${team}) - Injury Status: ${status}. Detail: ${injury}.${practiceText}`;
+    const statusKey = `${status}_${practice || "none"}`.toLowerCase().replace(/\s+/g, "_");
+    const fingerprint = `injury_${playerId}_s${season}_w${week}_${statusKey}`;
     const confidence = status.toLowerCase().includes("out") ? 0.95 : 0.85;
 
     return {
-      id: `ev_inj_${playerId}_w${week}_${idx}`,
+      id: `ev_inj_${playerId}_s${season}_w${week}_${idx}`,
       playerId,
       type: "injury",
       source: "nflverse_injuries",
-      sourceUrl: `https://github.com/nflverse/nflverse-data/releases/tag/injuries`,
+      sourceUrl: nflverseReleaseAssetUrl("injuries", `injuries_${season}.csv`),
       observedAt: now,
       publishedAt: now,
       confidence,
@@ -151,52 +296,31 @@ export const nflverse: NflverseAdapter = {
   parseInjuryReport,
 
   async getPlayerSnapshots({ season, week }: { season: number; week: number }) {
+    const url = nflverseReleaseAssetUrl("stats_player", `stats_player_week_${season}.csv`);
     try {
-      const res = await fetch(
-        `https://raw.githubusercontent.com/nflverse/nflverse-data/master/data/player_stats/player_stats_${season}.json`,
-        { next: { revalidate: 3600 } }
-      );
-      if (res.ok) {
-        const raw = await res.json();
-        const filtered = Array.isArray(raw) ? raw.filter((r) => r.week === week) : [];
-        if (filtered.length > 0) {
-          return parsePlayerStats(filtered, season, week);
-        }
-      }
+      const raw = await readReleaseAsset(url);
+      return parsePlayerStats(raw as NflverseRawStat[], season, week);
     } catch {
-      // Fallback gracefully on network error
+      // A missing release is a bounded degraded result; never substitute demo data.
+      return [];
     }
-    return [];
   },
 
   async getEvidence({ season, week }: { season: number; week: number }) {
     const evidenceList: Evidence[] = [];
-    try {
-      const depthRes = await fetch(
-        `https://raw.githubusercontent.com/nflverse/nflverse-data/master/data/depth_charts/depth_charts_${season}.json`,
-        { next: { revalidate: 3600 } }
-      );
-      if (depthRes.ok) {
-        const rawDepth = await depthRes.json();
-        if (Array.isArray(rawDepth)) {
-          evidenceList.push(...parseDepthCharts(rawDepth.slice(0, 50), season, week));
-        }
-      }
-    } catch {}
+    const assets = [
+      ["depth_charts", `depth_charts_${season}.csv`, parseDepthCharts] as const,
+      ["injuries", `injuries_${season}.csv`, parseInjuryReport] as const,
+    ];
 
-    try {
-      const injRes = await fetch(
-        `https://raw.githubusercontent.com/nflverse/nflverse-data/master/data/injuries/injuries_${season}.json`,
-        { next: { revalidate: 1800 } }
-      );
-      if (injRes.ok) {
-        const rawInj = await injRes.json();
-        if (Array.isArray(rawInj)) {
-          evidenceList.push(...parseInjuryReport(rawInj.slice(0, 50), season, week));
-        }
+    for (const [tag, asset, parser] of assets) {
+      try {
+        const raw = await readReleaseAsset(nflverseReleaseAssetUrl(tag, asset));
+        evidenceList.push(...parser(raw as never[], season, week));
+      } catch {
+        // Keep successful sources and explicitly degrade only the unavailable source.
       }
-    } catch {}
-
+    }
     return evidenceList;
   },
 };

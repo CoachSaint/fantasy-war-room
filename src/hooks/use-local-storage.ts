@@ -1,19 +1,21 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useEffect, useState } from "react";
 
 export function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T | ((prev: T) => T)) => void] {
   const [storedValue, setStoredValue] = useState<T>(initialValue);
 
   useEffect(() => {
-    try {
-      const item = window.localStorage.getItem(key);
-      if (item !== null) {
-        setStoredValue(JSON.parse(item));
+    const readStoredValue = () => {
+      try {
+        const item = window.localStorage.getItem(key);
+        if (item !== null) setStoredValue(JSON.parse(item) as T);
+      } catch {
+        // Storage can be unavailable in privacy-restricted browser contexts.
       }
-    } catch (error) {
-      console.warn(`Error reading localStorage key "${key}":`, error);
-    }
+    };
+    const timer = window.setTimeout(readStoredValue, 0);
+    return () => window.clearTimeout(timer);
   }, [key]);
 
   const setValue = (value: T | ((prev: T) => T)) => {
@@ -23,8 +25,8 @@ export function useLocalStorage<T>(key: string, initialValue: T): [T, (value: T 
       if (typeof window !== "undefined") {
         window.localStorage.setItem(key, JSON.stringify(valueToStore));
       }
-    } catch (error) {
-      console.warn(`Error setting localStorage key "${key}":`, error);
+    } catch {
+      // Storage can be unavailable in privacy-restricted browser contexts.
     }
   };
 

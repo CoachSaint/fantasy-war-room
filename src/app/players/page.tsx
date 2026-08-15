@@ -2,8 +2,9 @@
 
 import { useState } from "react";
 import { PageHeader } from "@/components/page-header";
+import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoPlayers, demoEvidence, type ExtendedPlayer } from "@/lib/demo";
-import { Search, ShieldAlert, Activity, BarChart2, Layers, FileText } from "lucide-react";
+import { Search, FileText } from "lucide-react";
 
 type PosFilter = "ALL" | "QB" | "RB" | "WR" | "TE";
 
@@ -22,6 +23,7 @@ export default function PlayersPage() {
 
   return (
     <>
+      <ConfigurationBanner message="Player identity, projections, and evidence are fixture data until provider connections are configured." />
       <PageHeader
         eyebrow="Player Intelligence Explorer"
         title="Every score has a trail."

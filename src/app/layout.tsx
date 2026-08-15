@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import "./globals.css";
 import { AppNav } from "@/components/app-nav";
 import { CoachBot } from "@/components/coach-bot";
+import { ManagerContext } from "@/components/manager-context";
 
 export const metadata: Metadata = {
   title: "Fantasy War Room — Evidence-Backed League Intelligence",
@@ -12,7 +13,10 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
   return (
     <html lang="en">
       <body>
-        <main className="shell">{children}</main>
+        <main className="shell">
+          <ManagerContext />
+          {children}
+        </main>
         <CoachBot />
         <AppNav />
       </body>

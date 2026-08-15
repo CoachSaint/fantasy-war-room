@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { sleeper } from "../src/lib/data/sleeper";
 import { parseDepthCharts, parseInjuryReport, parsePlayerStats } from "../src/lib/data/nflverse";
-import { createFingerprint, deduplicate, extractEvidence, type RawNewsArticle } from "../src/lib/data/news";
+import { deduplicate, extractEvidence, type RawNewsArticle } from "../src/lib/data/news";
 import { calculateFeatureVector, startScore, waiverScore } from "../src/lib/engine/score";
 
 describe("Sleeper Normalization & Client", () => {
@@ -31,6 +31,7 @@ describe("nflverse Ingestion Engine", () => {
         week: 1,
         season: 2026,
         fantasy_points_ppr: 19.8,
+        projected_points_ppr: 19.8,
         snap_share: 0.94,
         target_share: 0.29,
       },
@@ -43,12 +44,12 @@ describe("nflverse Ingestion Engine", () => {
   });
 
   it("parses raw depth charts and injury reports into Evidence", () => {
-    const depthData = [{ player_id: "p-1", full_name: "Justin Jefferson", team: "MIN", depth_position: "WR", depth_team: 1 }];
+    const depthData = [{ player_id: "p-1", full_name: "Justin Jefferson", team: "MIN", depth_position: "WR", depth_team: 1, season: 2026, week: 1 }];
     const depthEv = parseDepthCharts(depthData, 2026, 1);
     expect(depthEv[0].type).toBe("depth_chart");
     expect(depthEv[0].confidence).toBe(0.9);
 
-    const injData = [{ player_id: "p-2", full_name: "CMC", team: "SF", report_status: "Out", report_primary_injury: "Calf" }];
+    const injData = [{ player_id: "p-2", full_name: "CMC", team: "SF", report_status: "Out", report_primary_injury: "Calf", season: 2026, week: 1 }];
     const injEv = parseInjuryReport(injData, 2026, 1);
     expect(injEv[0].type).toBe("injury");
     expect(injEv[0].confidence).toBe(0.95);
@@ -131,6 +132,7 @@ describe("End-to-End Decision Pipeline Verification", () => {
         week: 1,
         season: 2026,
         fantasy_points_ppr: 15.4,
+        projected_points_ppr: 15.4,
         snap_share: 0.78,
         target_share: 0.24,
       },

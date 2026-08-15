@@ -33,7 +33,7 @@ export async function GET() {
             };
           }
         }
-      } catch (e) {
+      } catch {
         dbConnected = false;
       }
     }

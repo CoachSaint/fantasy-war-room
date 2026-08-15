@@ -71,6 +71,17 @@ export interface SleeperPlayerRaw {
   depth_chart_position?: string | null;
 }
 
+export interface NormalizeRosterOptions {
+  /** The explicitly selected NFL state. The adapter never invents a week. */
+  nflState?: SleeperNflState;
+  /** Candidate players which are eligible to be considered available. */
+  activePlayerIds?: Iterable<string>;
+  /** Players to omit even when they are in the active pool. */
+  excludedPlayerIds?: Iterable<string>;
+  /** Optional Sleeper player map used to derive an active pool safely. */
+  players?: Record<string, SleeperPlayerRaw>;
+}
+
 interface PlayersCache {
   data: Record<string, SleeperPlayerRaw> | null;
   fetchedAt: number;
@@ -123,6 +134,26 @@ export const sleeper = {
       `/players/nfl/trending/${type}?lookback_hours=${lookbackHours}&limit=${limit}`
     ),
 
+  /** Resolve live state and player availability before normalizing a league. */
+  getLeagueContext: async (
+    league: SleeperLeague,
+    rosters: SleeperRoster[],
+    userRosterId?: number,
+    options: NormalizeRosterOptions = {}
+  ): Promise<LeagueContext> => {
+    const [stateResult, playersResult] = await Promise.allSettled([
+      options.nflState ? Promise.resolve(options.nflState) : sleeper.getNflState(),
+      options.players || options.activePlayerIds ? Promise.resolve(options.players) : sleeper.getPlayers(),
+    ]);
+    const nflState = stateResult.status === "fulfilled" ? stateResult.value : undefined;
+    const players = playersResult.status === "fulfilled" ? playersResult.value : undefined;
+    return sleeper.normalizeRosterToLeagueContext(league, rosters, userRosterId, {
+      ...options,
+      nflState,
+      players,
+    });
+  },
+
   normalizePlayer: (sleeperId: string, raw: SleeperPlayerRaw): Player => {
     const validPositions: Position[] = ["QB", "RB", "WR", "TE", "K", "DST"];
     const pos = (raw.position || raw.fantasy_positions?.[0] || "WR") as Position;
@@ -142,19 +173,41 @@ export const sleeper = {
   normalizeRosterToLeagueContext: (
     league: SleeperLeague,
     rosters: SleeperRoster[],
-    userRosterId?: number
+    userRosterId?: number,
+    options: NormalizeRosterOptions | SleeperNflState = {}
   ): LeagueContext => {
-    const userRoster = rosters.find((r) => r.roster_id === userRosterId) || rosters[0];
+    // Accepting a state directly keeps this sync compatibility helper useful for
+    // callers that already fetched /state/nfl, while the async helper above can
+    // obtain it from Sleeper itself.
+    const normalizedOptions: NormalizeRosterOptions = "week" in options && !("nflState" in options)
+      ? { nflState: options as SleeperNflState }
+      : options as NormalizeRosterOptions;
+    // A missing roster id is an incomplete identity match, not permission to use
+    // another manager's roster. Failing closed here prevents cross-team leakage.
+    const userRoster = userRosterId == null
+      ? undefined
+      : rosters.find((r) => r.roster_id === userRosterId);
     const rosterPlayerIds = userRoster ? userRoster.players || [] : [];
 
     const allRosteredPlayerIds = new Set<string>();
     for (const r of rosters) {
-      if (r.players) {
-        for (const p of r.players) {
+      for (const ids of [r.players, r.starters, r.reserve, r.taxi]) {
+        for (const p of ids || []) {
           allRosteredPlayerIds.add(p);
         }
       }
     }
+
+    const derivedActivePlayerIds = normalizedOptions.players
+      ? Object.values(normalizedOptions.players)
+          .filter((p) => p.active !== false && p.team != null && p.team !== "")
+          .map((p) => p.player_id)
+      : [];
+    const activePlayerIds = new Set(normalizedOptions.activePlayerIds || derivedActivePlayerIds);
+    const excludedPlayerIds = new Set(normalizedOptions.excludedPlayerIds || []);
+    const availablePlayerIds = Array.from(activePlayerIds).filter(
+      (playerId) => !allRosteredPlayerIds.has(playerId) && !excludedPlayerIds.has(playerId)
+    );
 
     const recScoring = league.scoring_settings?.rec || 0;
     let scoring: LeagueContext["scoring"] = "standard";
@@ -165,11 +218,11 @@ export const sleeper = {
     return {
       leagueId: league.league_id,
       season: parseInt(league.season, 10) || 2026,
-      week: 1,
+      week: normalizedOptions.nflState?.display_week || normalizedOptions.nflState?.week || 0,
       scoring,
       rosterPositions: league.roster_positions || [],
       rosterPlayerIds,
-      availablePlayerIds: Array.from(allRosteredPlayerIds),
+      availablePlayerIds,
     };
   },
 };

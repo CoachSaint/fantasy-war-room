@@ -2,9 +2,10 @@
 
 import { useState } from "react";
 import { PageHeader } from "@/components/page-header";
+import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoPlayers, type ExtendedPlayer } from "@/lib/demo";
 import { PlayerCompareModal } from "@/components/player-compare-modal";
-import { CircleGauge, Sparkles, SlidersHorizontal, ArrowUpDown, AlertCircle } from "lucide-react";
+import { ArrowUpDown, AlertCircle } from "lucide-react";
 
 type Mode = "best" | "value" | "safe" | "upside";
 type PositionFilter = "ALL" | "QB" | "RB" | "WR" | "TE";
@@ -31,6 +32,7 @@ export default function DraftPage() {
 
   return (
     <>
+      <ConfigurationBanner message="Draft rankings use fixture players until league scoring and roster context are connected." />
       <PageHeader
         eyebrow="Draft Room Engine"
         title="Make the pick. Know why."
@@ -124,7 +126,7 @@ export default function DraftPage() {
 
       {/* Player Cards Grid */}
       <section className="grid grid-3" style={{ marginBottom: 28 }}>
-        {sortedPlayers.map((player, idx) => (
+        {sortedPlayers.map((player) => (
           <article
             key={player.id}
             className="card"

@@ -1,115 +1,127 @@
 import { NextResponse } from "next/server";
-import { demoPlayers, demoRecommendations, demoEvidence } from "@/lib/demo";
+import { z } from "zod";
+import { demoRecommendations } from "@/lib/demo";
+import { authorizeLeagueAccess } from "@/lib/supabase/admin";
+import { clientKey, consumeRateLimit, errorResponse, rateLimitResponse } from "@/lib/security/http";
 
 export const dynamic = "force-dynamic";
 
 const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
+const MODEL = "deepseek/deepseek-v4-pro";
 
-export async function POST(req: Request) {
+const messageSchema = z.object({
+  role: z.enum(["user", "assistant"]),
+  content: z.string().trim().min(1).max(2_000),
+}).strict();
+
+const requestSchema = z.object({
+  messages: z.array(messageSchema).min(1).max(20),
+  leagueId: z.string().uuid().optional(),
+  demo: z.boolean().optional().default(false),
+}).strict().superRefine((value, context) => {
+  const totalChars = value.messages.reduce((sum, message) => sum + message.content.length, 0);
+  if (totalChars > 8_000) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["messages"], message: "message history is too large" });
+  }
+  const last = value.messages[value.messages.length - 1];
+  if (last?.role !== "user") {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ["messages"], message: "latest message must be from user" });
+  }
+});
+
+function demoReply(): string {
+  const top = demoRecommendations[0];
+  return `Demo Coach (fixture data): ${top.headline} WAR Score ${top.score}/100 with ${top.confidence}% confidence. Evidence is demo-only; connect a league to receive current advice.`;
+}
+
+function providerContext(recommendations: Array<Record<string, unknown>>, evidence: Array<Record<string, unknown>>): string {
+  return [
+    "CURRENT LEAGUE RECOMMENDATIONS:",
+    ...recommendations.map((row) => `${String(row.kind).toUpperCase()} ${String(row.headline)} (${String(row.score)}/100, ${String(row.confidence)}% confidence; evidence ${Array.isArray(row.evidence_ids) ? row.evidence_ids.join(", ") : "none"})`),
+    "CURRENT EVIDENCE:",
+    ...evidence.map((row) => `${String(row.type)} from ${String(row.source)}: ${String(row.summary)}`),
+  ].join("\n");
+}
+
+export async function POST(request: Request) {
+  let body: unknown;
   try {
-    const { messages } = await req.json();
+    body = await request.json();
+  } catch {
+    return errorResponse("invalid_json", 400);
+  }
 
-    const apiKey = process.env.OPENROUTER_API_KEY;
-    const modelToUse = "deepseek/deepseek-v4-pro";
+  const parsed = requestSchema.safeParse(body);
+  if (!parsed.success) {
+    return errorResponse("invalid_coach_request", 400, { issues: parsed.error.issues.map((issue) => issue.path.join(".")) });
+  }
 
-    // 1. Build structured context from internal evidence engine
-    const playersList = demoPlayers.map((p) => `${p.fullName} (${p.position} - ${p.team})`).join(", ");
-    const recsList = demoRecommendations
-      .map(
-        (r) =>
-          `[Rec ID: ${r.id}] Kind: ${r.kind.toUpperCase()}, Score: ${r.score}/100, Confidence: ${r.confidence}%, Headline: "${r.headline}", Reasons: ${r.reasonCodes.join(", ")}`
-      )
-      .join("\n");
-    const evidenceList = demoEvidence
-      .map(
-        (e) =>
-          `[Evidence ${e.id}] Player: ${e.playerId}, Type: ${e.type}, Source: ${e.source}, Summary: "${e.summary}"`
-      )
-      .join("\n");
+  const { messages, leagueId, demo } = parsed.data;
+  if (demo) return NextResponse.json({ reply: demoReply(), modelUsed: "demo", source: "demo-fixture", demo: true });
+  if (!leagueId) return errorResponse("league_id_required", 400);
 
-    const systemPrompt = `You are Fantasy War Room Coach Bot, an elite league-aware fantasy football advisor powered by DeepSeek V4 Pro on OpenRouter.
+  const access = await authorizeLeagueAccess(request, leagueId);
+  if (!access.ok) return errorResponse(access.error, access.status);
 
-NORTH STAR PRINCIPLE: "Deterministic code produces recommendation scores; AI explains them using current evidence."
-Never hallucinate fake stats, rankings, or injuries. Ground every advice in the following live intelligence:
+  const limit = consumeRateLimit(clientKey(request, access.auth.user.id), { limit: 10, windowMs: 60_000 });
+  if (!limit.allowed) return rateLimitResponse(limit.retryAfterSeconds);
 
-LIVE LEAGUE PLAYERS:
-${playersList}
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  if (!apiKey) return errorResponse("coach_provider_unavailable", 503);
 
-CURRENT ENGINE RECOMMENDATIONS:
-${recsList}
+  try {
+    const recommendationQuery = await access.auth.adminClient
+      .from("recommendations")
+      .select("kind, headline, score, confidence, evidence_ids")
+      .eq("league_id", leagueId)
+      .or(`user_id.is.null,user_id.eq.${access.auth.user.id}`)
+      .order("score", { ascending: false })
+      .limit(50);
+    if (recommendationQuery.error) return errorResponse("league_context_unavailable", 503);
 
-LATEST SCOUT EVIDENCE:
-${evidenceList}
+    const recommendations = (recommendationQuery.data || []) as Array<Record<string, unknown>>;
+    if (recommendations.length === 0) return errorResponse("league_context_unavailable", 503);
 
-Instructions:
-- Provide clear, concise, actionable advice.
-- When explaining a Start/Sit, Draft pick, or Waiver move, refer to WAR Score, Confidence %, and specific Evidence items.
-- Keep tone confident, analytical, and ready for game day.
-`;
-
-    const fullMessages = [
-      { role: "system", content: systemPrompt },
-      ...(Array.isArray(messages) ? messages : [{ role: "user", content: String(messages) }]),
-    ];
-
-    // 2. Call OpenRouter API with DeepSeek V4 Pro
-    if (apiKey) {
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
-
-        const response = await fetch(OPENROUTER_URL, {
-          method: "POST",
-          headers: {
-            Authorization: `Bearer ${apiKey}`,
-            "Content-Type": "application/json",
-            "HTTP-Referer": "http://localhost:3000",
-            "X-Title": "Fantasy War Room",
-          },
-          signal: controller.signal,
-          body: JSON.stringify({
-            model: modelToUse,
-            messages: fullMessages,
-            max_tokens: 600,
-            temperature: 0.3,
-          }),
-        });
-
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          const data = await response.json();
-          const choice = data.choices?.[0]?.message;
-          const replyText = choice?.content || choice?.reasoning || null;
-
-          if (replyText) {
-            // Clean up any internal thinking prefixes if needed
-            const cleanedText = replyText.replace(/^Thought:[\s\S]*?\n\n/i, "").trim();
-            return NextResponse.json({
-              reply: cleanedText,
-              modelUsed: modelToUse,
-              source: "openrouter-deepseek-v4-pro",
-            });
-          }
-        }
-      } catch (e) {
-        console.warn("OpenRouter DeepSeek request warning:", e);
-      }
+    const evidenceIds = Array.from(new Set(recommendations.flatMap((row) => Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : []))).slice(0, 100);
+    let evidence: Array<Record<string, unknown>> = [];
+    if (evidenceIds.length > 0) {
+      const evidenceQuery = await access.auth.adminClient
+        .from("evidence")
+        .select("type, source, summary")
+        .in("id", evidenceIds)
+        .limit(100);
+      if (evidenceQuery.error) return errorResponse("league_context_unavailable", 503);
+      evidence = (evidenceQuery.data || []) as Array<Record<string, unknown>>;
     }
 
-    // 3. Fallback response grounded deterministically if API call is delayed
-    const fallbackReply = `**Coach War Room Intelligence (DeepSeek V4 Pro)**\n\nBased on current nflverse metrics and Sleeper evidence:\n\n` +
-      `- **Top Decision**: Start Justin Jefferson over volatile Flex options (WAR Score: 89/100, Confidence: 91%).\n` +
-      `- **Key Rationale**: High Target Share (29.4%), Elite Red Zone usage, and low injury risk.\n` +
-      `- **Waiver Wire**: Add emerging WR Isaiah Likely (FAAB rec: 12–15%).\n\n` +
-      `*Engine: ${modelToUse} (OpenRouter OmniRouter)*`;
+    const systemPrompt = `You are Fantasy War Room Coach. Deterministic code produces recommendation scores; you explain only the supplied, current league evidence. Never invent stats, injuries, rankings, or live facts. If evidence is insufficient, say so.\n\n${providerContext(recommendations, evidence)}`;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 12_000);
+    let response: Response;
+    try {
+      response = await fetch(OPENROUTER_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json",
+          "HTTP-Referer": process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000",
+          "X-Title": "Fantasy War Room",
+        },
+        signal: controller.signal,
+        body: JSON.stringify({ model: MODEL, messages: [{ role: "system", content: systemPrompt }, ...messages], max_tokens: 600, temperature: 0.3 }),
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
 
-    return NextResponse.json({
-      reply: fallbackReply,
-      modelUsed: modelToUse,
-      source: "engine-deterministic-fallback",
-    });
+    if (!response.ok) return errorResponse("coach_provider_error", 502);
+    const providerBody = await response.json() as { choices?: Array<{ message?: { content?: unknown; reasoning?: unknown } }> };
+    const content = providerBody.choices?.[0]?.message?.content || providerBody.choices?.[0]?.message?.reasoning;
+    if (typeof content !== "string" || !content.trim()) return errorResponse("coach_provider_invalid_response", 502);
+
+    return NextResponse.json({ reply: content.trim(), modelUsed: MODEL, source: "openrouter", demo: false });
   } catch (error) {
-    return NextResponse.json({ error: String(error) }, { status: 500 });
+    console.warn("Coach provider request failed", error instanceof Error ? error.name : "unknown_error");
+    return errorResponse("coach_provider_unavailable", 503);
   }
 }

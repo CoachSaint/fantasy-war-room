@@ -1,12 +1,14 @@
 "use client";
 
 import { PageHeader } from "@/components/page-header";
+import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoWaiverPairs } from "@/lib/demo";
-import { ShieldPlus, DollarSign, Calendar, Flame, ArrowRight, Zap, CheckCircle2 } from "lucide-react";
+import { DollarSign, Calendar, Flame } from "lucide-react";
 
 export default function WaiversPage() {
   return (
     <>
+      <ConfigurationBanner message="Waiver pairs and FAAB guidance are demo fixtures until league availability and budget history are connected." />
       <PageHeader
         eyebrow="Waiver Wire Allocator"
         title="Available to you, not the internet."
@@ -85,6 +87,8 @@ export default function WaiversPage() {
               </div>
               <button
                 type="button"
+                disabled
+                title="Connect a league to enable FAAB actions"
                 style={{
                   padding: "8px 18px",
                   borderRadius: 999,
@@ -93,10 +97,11 @@ export default function WaiversPage() {
                   fontWeight: 700,
                   fontSize: 12,
                   border: 0,
-                  cursor: "pointer",
+                  cursor: "not-allowed",
+                  opacity: 0.7,
                 }}
               >
-                Copy FAAB Amount
+                Copy unavailable in demo
               </button>
             </div>
 

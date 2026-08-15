@@ -4,5 +4,7 @@ node_modules
 .env.local
 .env.production
 .vercel
+*.tsbuildinfo
+supabase/.temp/
 coverage
 .DS_Store

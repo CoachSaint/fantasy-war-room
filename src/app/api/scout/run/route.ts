@@ -1,36 +1,24 @@
 import { NextResponse } from "next/server";
-import { hasAdminCredentials, createAdminClient } from "@/lib/supabase/admin";
-import { demoPlayers, demoEvidence, demoRecommendations } from "@/lib/demo";
-import { sleeper } from "@/lib/data/sleeper";
+import { timingSafeEqual } from "node:crypto";
+import { z } from "zod";
+import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
+import { errorResponse } from "@/lib/security/http";
 import { nflverse } from "@/lib/data/nflverse";
-import { news } from "@/lib/data/news";
-import {
-  draftScore,
-  startScore,
-  waiverScore,
-  confidenceScore,
-  ENGINE_VERSION,
-} from "@/lib/engine/score";
-import type { FeatureVector } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
+const inputSchema = z.object({
+  season: z.coerce.number().int().min(2020).max(2100).default(2026),
+  week: z.coerce.number().int().min(0).max(23).default(1),
+});
+
 function isAuthorized(request: Request): boolean {
   const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) {
-    return process.env.NODE_ENV !== "production";
-  }
-
-  const authHeader = request.headers.get("authorization");
-  if (authHeader === `Bearer ${cronSecret}`) return true;
-
-  const xSecret = request.headers.get("x-cron-secret");
-  if (xSecret === cronSecret) return true;
-
-  const url = new URL(request.url);
-  if (url.searchParams.get("secret") === cronSecret) return true;
-
-  return false;
+  if (!cronSecret) return false;
+  const value = request.headers.get("authorization")?.trim();
+  const expected = `Bearer ${cronSecret}`;
+  if (!value || value.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(value), Buffer.from(expected));
 }
 
 interface StepDetail {
@@ -39,6 +27,29 @@ interface StepDetail {
   durationMs: number;
   recordsProcessed: number;
   error?: string;
+}
+
+function step(name: string, status: StepDetail["status"], startedAt: number, recordsProcessed: number, error?: string): StepDetail {
+  return { name, status, durationMs: Date.now() - startedAt, recordsProcessed, ...(error ? { error } : {}) };
+}
+
+async function parseInput(request: Request): Promise<z.infer<typeof inputSchema>> {
+  const url = new URL(request.url);
+  const values: Record<string, string> = {};
+  for (const key of ["season", "week"]) {
+    const value = url.searchParams.get(key);
+    if (value != null) values[key] = value;
+  }
+  if (request.method === "POST") {
+    const contentType = request.headers.get("content-type") || "";
+    if (contentType.includes("application/json")) {
+      const body = await request.json() as unknown;
+      if (body && typeof body === "object" && !Array.isArray(body)) {
+        Object.assign(values, body);
+      }
+    }
+  }
+  return inputSchema.parse(values);
 }
 
 export async function GET(request: Request) {
@@ -50,284 +61,116 @@ export async function POST(request: Request) {
 }
 
 async function handleScoutRun(request: Request) {
-  if (!isAuthorized(request)) {
+  if (!process.env.CRON_SECRET) return errorResponse("cron_secret_unconfigured", 503);
+  if (!isAuthorized(request)) return errorResponse("unauthorized", 401);
+
+  let input: z.infer<typeof inputSchema>;
+  try {
+    input = await parseInput(request);
+  } catch (error) {
+    if (error instanceof SyntaxError) return errorResponse("invalid_json", 400);
+    return errorResponse("invalid_scout_input", 400);
+  }
+
+  // A validly authenticated request with no persistence plane is degraded,
+  // not a successful run and not an ordinary route/configuration error.
+  if (!hasAdminCredentials()) {
     return NextResponse.json(
-      { ok: false, error: "unauthorized" },
-      { status: 401 }
+      { ok: false, status: "degraded", error: "supabase_unavailable", season: input.season, week: input.week },
+      { status: 503 }
     );
   }
 
   const startedAt = new Date();
   const steps: StepDetail[] = [];
+  let adminClient: ReturnType<typeof createAdminClient>;
+  try {
+    adminClient = createAdminClient();
+  } catch {
+    return errorResponse("supabase_unavailable", 503);
+  }
   let runId: string | null = null;
-  const dbAvailable = hasAdminCredentials();
 
-  let adminClient = null;
-  if (dbAvailable) {
-    try {
-      adminClient = createAdminClient();
-      const { data } = await adminClient
-        .from("scout_runs")
-        .insert([{ status: "running", trigger: "cron", started_at: startedAt.toISOString() }])
-        .select("id")
-        .single();
-      if (data) runId = data.id;
-    } catch (e) {
-      console.warn("Failed to initialize scout_runs table entry:", e);
-    }
-  }
-
-  // Step 1: League Context Sync
-  const step1Start = Date.now();
   try {
-    steps.push({
-      name: "league_roster_sync",
-      status: "success",
-      durationMs: Date.now() - step1Start,
-      recordsProcessed: 1,
-    });
-  } catch (err) {
-    steps.push({
-      name: "league_roster_sync",
-      status: "failed",
-      durationMs: Date.now() - step1Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  // Step 2: Player Identity Normalization
-  const step2Start = Date.now();
-  let normalizedPlayerCount = demoPlayers.length;
-  try {
-    if (adminClient) {
-      for (const p of demoPlayers) {
-        const { data: playerRow } = await adminClient
-          .from("players")
-          .upsert(
-            {
-              full_name: p.fullName,
-              team: p.team,
-              position: p.position,
-              status: p.status,
-              bye_week: p.byeWeek,
-              updated_at: new Date().toISOString(),
-            },
-            { onConflict: "full_name,position" }
-          )
-          .select("id")
-          .maybeSingle();
-
-        if (playerRow && p.sleeperId) {
-          await adminClient.from("player_id_map").upsert(
-            {
-              player_id: playerRow.id,
-              provider: "sleeper",
-              provider_player_id: p.sleeperId,
-            },
-            { onConflict: "provider,provider_player_id" }
-          );
-        }
-      }
-    }
-    steps.push({
-      name: "player_normalization",
-      status: "success",
-      durationMs: Date.now() - step2Start,
-      recordsProcessed: normalizedPlayerCount,
-    });
-  } catch (err) {
-    steps.push({
-      name: "player_normalization",
-      status: "failed",
-      durationMs: Date.now() - step2Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  // Step 3: Stats Snapshot Ingestion
-  const step3Start = Date.now();
-  try {
-    const snapshots = await nflverse.getPlayerSnapshots({ season: 2026, week: 1 });
-    steps.push({
-      name: "stats_snapshot_ingestion",
-      status: "success",
-      durationMs: Date.now() - step3Start,
-      recordsProcessed: snapshots.length || demoPlayers.length,
-    });
-  } catch (err) {
-    steps.push({
-      name: "stats_snapshot_ingestion",
-      status: "failed",
-      durationMs: Date.now() - step3Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  // Step 4: Evidence Ingestion & Deduplication
-  const step4Start = Date.now();
-  try {
-    const newsItems = await news.search({ since: new Date(Date.now() - 86400000).toISOString() });
-    const totalEvidence = demoEvidence.concat(newsItems);
-
-    if (adminClient) {
-      for (const ev of totalEvidence) {
-        await adminClient.from("evidence").upsert(
-          {
-            type: ev.type,
-            source: ev.source,
-            source_url: ev.sourceUrl,
-            summary: ev.summary,
-            confidence: ev.confidence * 100,
-            published_at: ev.publishedAt,
-            observed_at: ev.observedAt,
-            fingerprint: ev.fingerprint,
-          },
-          { onConflict: "fingerprint" }
-        );
-      }
-    }
-
-    steps.push({
-      name: "evidence_ingestion_dedupe",
-      status: "success",
-      durationMs: Date.now() - step4Start,
-      recordsProcessed: totalEvidence.length,
-    });
-  } catch (err) {
-    steps.push({
-      name: "evidence_ingestion_dedupe",
-      status: "failed",
-      durationMs: Date.now() - step4Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  // Step 5: Feature Vector Derivation & Deterministic Scoring
-  const step5Start = Date.now();
-  try {
-    let scoreCount = 0;
-    for (const p of demoPlayers) {
-      const f: FeatureVector = {
-        projection: (p.projectedPpg / 25) * 100,
-        replacementValue: 70,
-        opportunity: p.snapShare,
-        marketDiscount: 80,
-        rosterFit: 85,
-        positionalScarcity: p.position === "TE" ? 90 : 70,
-        upside: (p.ceilingPpg / 35) * 100,
-        scheduleFit: 75,
-        matchup: p.matchupDifficulty === "easy" ? 85 : p.matchupDifficulty === "hard" ? 40 : 65,
-        roleTrend: 80,
-        floor: (p.floorPpg / 20) * 100,
-        ceiling: (p.ceilingPpg / 35) * 100,
-        usageTrend: p.targetShare * 3,
-        rosValue: 80,
-        rosterNeed: 75,
-        acquisitionEfficiency: 80,
-        injuryPenalty: p.injuryRiskScore,
-        uncertaintyPenalty: p.status === "Questionable" ? 25 : 0,
-        freshness: 95,
-        evidenceQuality: 90,
-        projectionAgreement: 88,
-        roleCertainty: 100 - p.injuryRiskScore,
-        injuryCertainty: 90,
-      };
-
-      const dScore = draftScore(f);
-      const sScore = startScore(f);
-      const wScore = waiverScore(f);
-      const cScore = confidenceScore(f);
-
-      scoreCount++;
-    }
-
-    steps.push({
-      name: "feature_scoring",
-      status: "success",
-      durationMs: Date.now() - step5Start,
-      recordsProcessed: scoreCount,
-    });
-  } catch (err) {
-    steps.push({
-      name: "feature_scoring",
-      status: "failed",
-      durationMs: Date.now() - step5Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  // Step 6: Diff against Previous Snapshots
-  const step6Start = Date.now();
-  try {
-    steps.push({
-      name: "snapshot_diff",
-      status: "success",
-      durationMs: Date.now() - step6Start,
-      recordsProcessed: 3,
-    });
-  } catch (err) {
-    steps.push({
-      name: "snapshot_diff",
-      status: "failed",
-      durationMs: Date.now() - step6Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  // Step 7: Materialize Recommendations
-  const step7Start = Date.now();
-  try {
-    steps.push({
-      name: "recommendation_materialization",
-      status: "success",
-      durationMs: Date.now() - step7Start,
-      recordsProcessed: demoRecommendations.length,
-    });
-  } catch (err) {
-    steps.push({
-      name: "recommendation_materialization",
-      status: "failed",
-      durationMs: Date.now() - step7Start,
-      recordsProcessed: 0,
-      error: String(err),
-    });
-  }
-
-  const hasFailures = steps.some((s) => s.status === "failed");
-  const finalStatus = hasFailures ? "completed_with_errors" : "completed";
-  const finishedAt = new Date();
-
-  if (adminClient && runId) {
-    await adminClient
+    const run = await adminClient
       .from("scout_runs")
-      .update({
-        status: finalStatus,
-        finished_at: finishedAt.toISOString(),
-        steps,
-      })
+      .insert([{ status: "running", trigger: "cron", started_at: startedAt.toISOString() }])
+      .select("id")
+      .single();
+    if (run.error || !run.data) return errorResponse("scout_persistence_unavailable", 503);
+    runId = run.data.id;
+  } catch {
+    return errorResponse("scout_persistence_unavailable", 503);
+  }
+
+  // These steps previously reported fixture work as successful. Until a real
+  // league sync/materializer is configured, report the bounded gap explicitly.
+  let markFailed = false;
+  const syncStart = Date.now();
+  steps.push(step("league_roster_sync", "skipped", syncStart, 0, "league_sync_not_configured"));
+
+  const normalizeStart = Date.now();
+  steps.push(step("player_normalization", "skipped", normalizeStart, 0, "player_materializer_not_configured"));
+
+  const snapshotStart = Date.now();
+  try {
+    const snapshots = await nflverse.getPlayerSnapshots(input);
+    if (snapshots.length === 0) {
+      steps.push(step("stats_snapshot_ingestion", "skipped", snapshotStart, 0, "provider_unavailable"));
+    } else {
+      // Fetching is not ingestion. Preserve the observed row count while being
+      // explicit that no canonical snapshot write occurred.
+      steps.push(step("stats_snapshot_ingestion", "skipped", snapshotStart, snapshots.length, "snapshot_persistence_not_configured"));
+    }
+  } catch {
+    markFailed = true;
+    steps.push(step("stats_snapshot_ingestion", "failed", snapshotStart, 0, "provider_error"));
+  }
+
+  const evidenceStart = Date.now();
+  try {
+    const evidence = await nflverse.getEvidence(input);
+    if (evidence.length === 0) {
+      steps.push(step("evidence_ingestion_dedupe", "skipped", evidenceStart, 0, "provider_unavailable"));
+    } else {
+      // The current schema requires canonical UUID player IDs before evidence
+      // can be persisted. Do not write provider IDs into FK columns.
+      steps.push(step("evidence_ingestion_dedupe", "skipped", evidenceStart, evidence.length, "canonical_player_mapping_required"));
+    }
+  } catch {
+    markFailed = true;
+    steps.push(step("evidence_ingestion_dedupe", "failed", evidenceStart, 0, "provider_error"));
+  }
+
+  const scoringStart = Date.now();
+  steps.push(step("feature_scoring", "skipped", scoringStart, 0, "league_context_required"));
+  const diffStart = Date.now();
+  steps.push(step("snapshot_diff", "skipped", diffStart, 0, "snapshot_persistence_required"));
+  const materializeStart = Date.now();
+  steps.push(step("recommendation_materialization", "skipped", materializeStart, 0, "recommendation_materializer_not_configured"));
+
+  const finishedAt = new Date();
+  const hasFailures = markFailed || steps.some((entry) => entry.status === "failed");
+  const finalStatus = "completed_with_errors" as const;
+  try {
+    const finalUpdate = await adminClient
+      .from("scout_runs")
+      .update({ status: finalStatus, finished_at: finishedAt.toISOString(), steps, error: hasFailures ? "provider_error" : "pipeline_incomplete" })
       .eq("id", runId);
+    if (finalUpdate.error) return errorResponse("scout_persistence_unavailable", 503);
+  } catch {
+    return errorResponse("scout_persistence_unavailable", 503);
   }
 
   return NextResponse.json({
-    ok: true,
-    scoutRunId: runId || "demo-run-id",
+    ok: false,
+    status: "degraded",
+    scoutRunId: runId,
     trigger: "cron",
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
-    status: finalStatus,
-    mode: dbAvailable ? "supabase" : "demo",
     steps,
-    summary: {
-      engineVersion: ENGINE_VERSION,
-      playersProcessed: demoPlayers.length,
-      evidenceIngested: demoEvidence.length,
-      recommendationsMaterialized: demoRecommendations.length,
-    },
-  });
+    error: hasFailures ? "provider_error" : "pipeline_incomplete",
+    summary: { season: input.season, week: input.week, playersProcessed: 0, evidenceIngested: 0, recommendationsMaterialized: 0 },
+  }, { status: 503 });
 }

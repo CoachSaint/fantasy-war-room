@@ -38,6 +38,7 @@ export function AppNav() {
           <Link
             key={href}
             href={href}
+            aria-label={label}
             aria-current={active ? "page" : undefined}
             style={{
               display: "flex",

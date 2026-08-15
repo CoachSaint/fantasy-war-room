@@ -1,6 +1,7 @@
 "use client";
 
-import { X, Trophy, ShieldAlert, ArrowRight, Zap, Target } from "lucide-react";
+import { useEffect, useRef } from "react";
+import { X, Trophy, Zap } from "lucide-react";
 import type { ExtendedPlayer } from "@/lib/demo";
 
 interface PlayerCompareModalProps {
@@ -11,6 +12,16 @@ interface PlayerCompareModalProps {
 
 export function PlayerCompareModal({ playerA, playerB, onClose }: PlayerCompareModalProps) {
   const winner = playerA.projectedPpg >= playerB.projectedPpg ? playerA : playerB;
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+
+  useEffect(() => {
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   return (
     <div
@@ -26,8 +37,12 @@ export function PlayerCompareModal({ playerA, playerB, onClose }: PlayerCompareM
         padding: 16,
       }}
       onClick={onClose}
+      role="presentation"
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="compare-dialog-title"
         className="card"
         style={{
           width: "min(720px, 100%)",
@@ -46,12 +61,14 @@ export function PlayerCompareModal({ playerA, playerB, onClose }: PlayerCompareM
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
             <Trophy size={22} style={{ color: "#ffd700" }} />
             <div>
-              <h2 style={{ margin: 0, fontSize: 20, fontWeight: 750 }}>Head-to-Head Player Comparison</h2>
+              <h2 id="compare-dialog-title" style={{ margin: 0, fontSize: 20, fontWeight: 750 }}>Head-to-Head Player Comparison</h2>
               <span className="muted" style={{ fontSize: 12 }}>Deterministic scoring engine analysis</span>
             </div>
           </div>
           <button
             type="button"
+            ref={closeButtonRef}
+            aria-label="Close player comparison"
             onClick={onClose}
             style={{ background: "none", border: 0, color: "var(--muted)", cursor: "pointer" }}
           >

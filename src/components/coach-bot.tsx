@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bot, Send, Sparkles, Minimize2, Cpu, ShieldCheck, RefreshCw } from "lucide-react";
+import { Bot, Send, Sparkles, Minimize2, Cpu, RefreshCw } from "lucide-react";
+
+let messageSequence = 0;
+const nextMessageId = (prefix: string) => `${prefix}-${++messageSequence}`;
 
 interface Message {
   id: string;
@@ -25,13 +28,15 @@ export function CoachBot() {
     {
       id: "msg-welcome",
       sender: "coach",
-      text: "👋 I'm **Coach War Room AI**, powered by **DeepSeek V4 Pro** via OpenRouter. Grounded strictly in current nflverse metrics and Sleeper evidence. Ask me any Start/Sit, Draft, or Waiver decision!",
+      text: "👋 I'm Coach War Room AI. This protected build uses clearly labeled fixture advice until an authenticated league with current evidence is connected.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -43,12 +48,29 @@ export function CoachBot() {
     }
   }, [messages, isOpen]);
 
+  useEffect(() => {
+    if (isOpen) closeButtonRef.current?.focus();
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setIsOpen(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) triggerRef.current?.focus();
+  }, [isOpen]);
+
   const handleSend = async (customText?: string) => {
     const textToSend = customText || input;
     if (!textToSend.trim() || loading) return;
 
     const userMsg: Message = {
-      id: `usr-${Date.now()}`,
+      id: nextMessageId("usr"),
       sender: "user",
       text: textToSend,
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -67,16 +89,27 @@ export function CoachBot() {
         }));
       history.push({ role: "user", content: textToSend });
 
+      let coachContext: { demo: true } | { leagueId: string } = { demo: true };
+      try {
+        const contextResponse = await fetch("/api/context", { credentials: "same-origin" });
+        const contextBody = await contextResponse.json() as { data?: { memberships?: Array<{ league?: { id?: unknown }; leagueId?: unknown }> } };
+        const membership = contextBody.data?.memberships?.[0];
+        const candidate = membership?.league?.id ?? membership?.leagueId;
+        if (contextResponse.ok && typeof candidate === "string" && candidate) coachContext = { leagueId: candidate };
+      } catch {
+        // The request remains explicitly in labeled demo mode.
+      }
+
       const res = await fetch("/api/coach/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history }),
+        body: JSON.stringify({ messages: history, ...coachContext }),
       });
 
       if (res.ok) {
         const data = await res.json();
         const coachMsg: Message = {
-          id: `bot-${Date.now()}`,
+          id: nextMessageId("bot"),
           sender: "coach",
           text: data.reply,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
@@ -86,11 +119,11 @@ export function CoachBot() {
       } else {
         throw new Error("Coach bot response error");
       }
-    } catch (error) {
+    } catch {
       const errorMsg: Message = {
-        id: `err-${Date.now()}`,
+        id: nextMessageId("err"),
         sender: "coach",
-        text: "⚡ **Decision Engine Note (DeepSeek V4 Pro)**: Justin Jefferson is recommended as a 91% confidence Start over Marvin Harrison Jr. due to an easy secondary matchup (#2 overall) and 29.4% target share.",
+        text: "⚠️ Coach is temporarily unavailable. No live recommendation was generated; please retry when the evidence service is reachable.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -105,6 +138,8 @@ export function CoachBot() {
       {!isOpen && (
         <button
           type="button"
+          ref={triggerRef}
+          aria-label="Open Coach War Room AI"
           onClick={() => setIsOpen(true)}
           style={{
             position: "fixed",
@@ -136,7 +171,7 @@ export function CoachBot() {
               borderRadius: 999,
             }}
           >
-            DeepSeek V4 Pro
+            Coach AI
           </span>
         </button>
       )}
@@ -144,6 +179,9 @@ export function CoachBot() {
       {/* Floating Coach Chat Drawer */}
       {isOpen && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="coach-dialog-title"
           style={{
             position: "fixed",
             right: 24,
@@ -189,17 +227,19 @@ export function CoachBot() {
               </div>
               <div>
                 <div style={{ fontWeight: 700, fontSize: 15, display: "flex", alignItems: "center", gap: 6 }}>
-                  Coach War Room AI
-                  <span style={{ fontSize: 10, background: "var(--good)", color: "#fff", padding: "1px 6px", borderRadius: 999 }}>LIVE</span>
+                  <span id="coach-dialog-title">Coach War Room AI</span>
+                  <span style={{ fontSize: 10, background: "var(--warn)", color: "#fff", padding: "1px 6px", borderRadius: 999 }}>EVIDENCE MODE</span>
                 </div>
                 <div className="muted" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
-                  <Cpu size={12} /> DeepSeek V4 Pro · OpenRouter OmniRouter
+                  <Cpu size={12} /> Evidence service · provider reported per response
                 </div>
               </div>
             </div>
 
             <button
               type="button"
+              ref={closeButtonRef}
+              aria-label="Close Coach War Room AI"
               onClick={() => setIsOpen(false)}
               style={{ background: "none", border: 0, color: "var(--muted)", cursor: "pointer" }}
             >
@@ -308,7 +348,7 @@ export function CoachBot() {
                 }}
               >
                 <RefreshCw size={14} className="spin" style={{ color: "var(--good)" }} />
-                <span>DeepSeek V4 Pro is reasoning over evidence...</span>
+                <span>Coach is checking available evidence...</span>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -329,9 +369,10 @@ export function CoachBot() {
             }}
           >
             <input
+              aria-label="Ask Coach War Room AI"
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask DeepSeek V4 Pro about lineups, trades, waivers..."
+              placeholder="Ask Coach AI about lineups, trades, waivers..."
               style={{
                 flex: 1,
                 height: 44,

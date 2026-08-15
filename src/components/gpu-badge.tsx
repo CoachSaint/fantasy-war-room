@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Cpu, ShieldCheck, Activity, X, Zap } from "lucide-react";
+import { useEffect, useRef, useState } from "react";
+import { ShieldCheck, Activity, X, Zap } from "lucide-react";
 import type { GpuStats } from "@/lib/gpu-monitor";
 
 export function GpuBadge() {
   const [stats, setStats] = useState<GpuStats | null>(null);
   const [openDrawer, setOpenDrawer] = useState(false);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
 
   const fetchStats = async () => {
     try {
@@ -21,20 +22,33 @@ export function GpuBadge() {
   };
 
   useEffect(() => {
-    fetchStats();
-    const interval = setInterval(fetchStats, 3000);
-    return () => clearInterval(interval);
+    const initialFetch = window.setTimeout(fetchStats, 0);
+    const interval = setInterval(fetchStats, 30_000);
+    return () => {
+      window.clearTimeout(initialFetch);
+      clearInterval(interval);
+    };
   }, []);
 
-  const utilization = stats?.utilization ?? 18;
-  const activeModel = "deepseek/deepseek-v4-pro";
+  useEffect(() => {
+    if (!openDrawer) return;
+    closeButtonRef.current?.focus();
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpenDrawer(false);
+    };
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [openDrawer]);
+
+  const utilization = stats?.utilization;
 
   return (
     <>
       <button
         type="button"
         onClick={() => setOpenDrawer(true)}
-        title="View OpenRouter LLM & Local System Stats"
+        title="View telemetry status"
+        aria-label="View telemetry status"
         className="glass"
         style={{
           display: "inline-flex",
@@ -57,13 +71,13 @@ export function GpuBadge() {
             width: 8,
             height: 8,
             borderRadius: "50%",
-            background: "var(--good)",
-            boxShadow: "0 0 8px var(--good)",
+            background: stats ? "var(--good)" : "var(--muted)",
+            boxShadow: stats ? "0 0 8px var(--good)" : "none",
             animation: "pulse 2s infinite",
           }}
         />
         <Zap size={14} style={{ color: "#ffd700" }} />
-        <span>DeepSeek V4 Pro</span>
+        <span>Coach telemetry</span>
         <span
           style={{
             opacity: 0.6,
@@ -91,8 +105,12 @@ export function GpuBadge() {
             padding: 16,
           }}
           onClick={() => setOpenDrawer(false)}
+          role="presentation"
         >
           <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="telemetry-dialog-title"
             className="card"
             style={{
               width: "min(520px, 100%)",
@@ -107,10 +125,12 @@ export function GpuBadge() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <Activity size={20} style={{ color: "var(--good)" }} />
-                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>LLM Engine & System Telemetry</h3>
+                <h3 id="telemetry-dialog-title" style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>LLM Engine & System Telemetry</h3>
               </div>
               <button
                 type="button"
+                ref={closeButtonRef}
+                aria-label="Close telemetry"
                 onClick={() => setOpenDrawer(false)}
                 style={{ background: "none", border: 0, color: "var(--muted)", cursor: "pointer" }}
               >
@@ -119,7 +139,7 @@ export function GpuBadge() {
             </div>
 
             <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
-              Fantasy War Room Coach Bot is powered by <strong>DeepSeek V4 Pro</strong> via OpenRouter OmniRouter with zero local GPU overhead.
+              Provider and hardware telemetry are shown only when the connected service reports them.
             </p>
 
             <div style={{ display: "grid", gap: 14, marginTop: 20 }}>
@@ -137,9 +157,9 @@ export function GpuBadge() {
               >
                 <ShieldCheck size={20} style={{ color: "var(--good)", flexShrink: 0 }} />
                 <div style={{ fontSize: 13 }}>
-                  <strong>OpenRouter DeepSeek V4 Pro Active</strong>
+                  <strong>{stats ? "Telemetry service connected" : "Telemetry unavailable"}</strong>
                   <div className="muted" style={{ fontSize: 12 }}>
-                    High-reasoning model optimized for fantasy football evidence analysis and decision grounding.
+                    {stats ? "Live system readings are available for this session." : "No live system reading is available right now."}
                   </div>
                 </div>
               </div>
@@ -148,19 +168,19 @@ export function GpuBadge() {
               <div style={{ background: "var(--surface)", borderRadius: 14, padding: 14, fontSize: 13, display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span className="muted">Router Provider:</span>
-                  <span style={{ fontWeight: 600 }}>OpenRouter (OmniRouter)</span>
+                  <span style={{ fontWeight: 600 }}>{stats ? "Local system monitor" : "Unavailable"}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span className="muted">Active Model ID:</span>
-                  <span style={{ fontWeight: 600, fontFamily: "monospace" }}>deepseek/deepseek-v4-pro</span>
+                  <span style={{ fontWeight: 600, fontFamily: "monospace" }}>{stats?.activeModel ?? "Unavailable"}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span className="muted">Local Hardware Load:</span>
-                  <span style={{ fontWeight: 600, color: "var(--good)" }}>{utilization}% GPU (Zero Local Bottleneck)</span>
+                  <span style={{ fontWeight: 600, color: utilization == null ? "var(--muted)" : "var(--good)" }}>{utilization == null ? "Unavailable" : `${utilization}% GPU`}</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <span className="muted">Context Window:</span>
-                  <span style={{ fontWeight: 600 }}>128,000 Tokens</span>
+                  <span style={{ fontWeight: 600 }}>Not reported</span>
                 </div>
               </div>
             </div>

@@ -2,15 +2,17 @@
 
 import { useState } from "react";
 import { PageHeader } from "@/components/page-header";
-import { demoStartSitPairs, demoPlayers } from "@/lib/demo";
+import { ConfigurationBanner } from "@/components/configuration-banner";
+import { demoStartSitPairs } from "@/lib/demo";
 import { PlayerCompareModal } from "@/components/player-compare-modal";
-import { ListChecks, ShieldCheck, AlertTriangle, ArrowRight, Zap, Target } from "lucide-react";
+import { ShieldCheck, ArrowRight, Zap } from "lucide-react";
 
 export default function LineupPage() {
   const [activeCompare, setActiveCompare] = useState<(typeof demoStartSitPairs)[0] | null>(null);
 
   return (
     <>
+      <ConfigurationBanner message="Start/sit pairs are illustrative until your roster, scoring, and current injury feeds are connected." />
       <PageHeader
         eyebrow="Lineup Lab"
         title="Two decisions need attention."

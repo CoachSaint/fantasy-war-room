@@ -1,4 +1,4 @@
-import type { Player, PlayerSnapshot, Evidence, Recommendation, Position } from "@/lib/types";
+import type { Player, Evidence, Recommendation } from "@/lib/types";
 
 const now = new Date();
 const hours4 = new Date(now.getTime() + 4 * 60 * 60 * 1000);
