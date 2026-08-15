@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/scout/run",
+      "schedule": "0 12 * * *"
+    }
+  ]
+}
