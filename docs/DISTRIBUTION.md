@@ -29,6 +29,7 @@ Set these names in the correct environment; never copy values into this reposito
 - `NEXT_PUBLIC_APP_URL`
 - `NEXT_PUBLIC_DEMO_MODE` (`true` until the connected flow is verified; do not rely on this flag as an authorization boundary)
 - `NFLVERSE_RELEASE_BASE_URL` (optional; official release base by default)
+- `YAHOO_CLIENT_ID`, `YAHOO_CLIENT_SECRET`, `YAHOO_REDIRECT_URI`, and `YAHOO_TOKEN_ENCRYPTION_KEY` (server-only; leave unset until the Yahoo application is approved)
 
 The owner must create Supabase Auth users, workspace/league membership records, provider mappings, and a real league setup. Credential creation, secret entry, DNS/domain ownership, billing, and production approval are owner-only actions.
 
@@ -38,8 +39,9 @@ Apply migrations exactly once and in filename order:
 
 1. `supabase/migrations/0001_initial.sql`
 2. `supabase/migrations/0002_workspace_learning.sql`
+3. `supabase/migrations/0003_yahoo_integration.sql`
 
-The second migration adds workspace membership, exact scoring rules, roster slot definitions, assignments, prediction/outcome, calibration, decision, and source-performance tables plus membership-scoped policies. Do not edit an applied migration or broaden a declaration to hide pending work. Before promotion, inspect the migration tool's declared and pending sets and apply only the exact pending files. There is no automatic down migration; retain a database rollback/PITR anchor and a tested application rollback plan.
+The second migration adds workspace membership, exact scoring rules, roster slot definitions, assignments, prediction/outcome, calibration, decision, and source-performance tables plus membership-scoped policies. The third queues encrypted, user-scoped Yahoo OAuth connections, provider links, and sync runs while extending the league provider constraint. Do not edit an applied migration or broaden a declaration to hide pending work. Before promotion, inspect the migration tool's declared and pending sets and apply only the exact pending files. There is no automatic down migration; retain a database rollback/PITR anchor and a tested application rollback plan.
 
 ## Vercel and Supabase cron behavior
 

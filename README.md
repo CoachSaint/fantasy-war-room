@@ -12,6 +12,7 @@ Current distribution status: **protected demo / integration candidate, not a ful
 - Supabase/Postgres
 - Vercel deploy + protected daily Cron
 - Sleeper adapter for first league integration
+- Credential-gated, read-only Yahoo Fantasy OAuth and roster import
 - nflverse/open data adapter for stats/injuries/depth chart inputs
 - pluggable news intelligence adapter
 
@@ -32,7 +33,7 @@ npm run build
 ```
 
 ## Environment
-`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are browser-safe Supabase values. `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`, and `OPENROUTER_API_KEY` are server-only. `NFLVERSE_RELEASE_BASE_URL` is optional and defaults to the official release-asset base. Names and blank-value examples are in [.env.example](.env.example); no credential values belong in Git.
+`NEXT_PUBLIC_SUPABASE_URL` and `NEXT_PUBLIC_SUPABASE_ANON_KEY` are browser-safe Supabase values. `SUPABASE_SERVICE_ROLE_KEY`, `CRON_SECRET`, `OPENROUTER_API_KEY`, and every `YAHOO_*` credential/key are server-only. `NFLVERSE_RELEASE_BASE_URL` is optional and defaults to the official release-asset base. Names and blank-value examples are in [.env.example](.env.example); no credential values belong in Git.
 
 Vercel calls `/api/scout/run` daily from `vercel.json` at `0 12 * * *`. The route requires an exact `Authorization: Bearer $CRON_SECRET` header and returns an explicit degraded `503` until Supabase persistence and the real league/materialization pipeline are configured. See [docs/DISTRIBUTION.md](docs/DISTRIBUTION.md).
 
@@ -53,9 +54,10 @@ See:
 - `docs/SECURITY.md`
 - `docs/DISTRIBUTION.md`
 - `docs/IMPLEMENTATION_STATUS.md`
+- `docs/YAHOO_INTEGRATION.md`
 
 ## First integration order
-1. Sleeper identity + league import
+1. Sleeper identity + league import or read-only Yahoo OAuth import
 2. nflverse player/stat/injury normalization
 3. persistence + snapshot jobs
 4. news evidence extraction

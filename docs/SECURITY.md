@@ -8,6 +8,10 @@
 | `/api/recommendations?demo=true` | Explicit fixture response with `demo: true`; no league auth is implied |
 | `/api/recommendations?leagueId=...` | Requires Supabase credentials, authenticated bearer/cookie identity, and membership/owner access for that league |
 | `/api/leagues/setup` | Requires Supabase credentials and authenticated Supabase identity; validates and persists only canonical setup data |
+| `/api/integrations/yahoo/start` | Authenticated redirect only; user-bound cryptographic state in a short-lived HttpOnly/SameSite cookie |
+| `/api/integrations/yahoo/callback` | Requires the same authenticated app session and exact user-bound state; exchanges the code server-side, participates in the connection version lock, and stores AES-256-GCM ciphertext only |
+| `/api/integrations/yahoo/status` | Returns token-free connection metadata scoped to the authenticated user |
+| `/api/integrations/yahoo/sync` | Authenticated, rate-limited, read-only Yahoo import; database-serialized refresh rotation, strict provider validation, and persistence results are checked |
 | `/api/coach/chat` with `demo: true` | Explicit demo reply and `source: demo-fixture` |
 | `/api/coach/chat` connected | Requires league ID, authenticated membership, rate limit, OpenRouter credential, and persisted current league context |
 | `/api/scout/run` | Requires exact constant-time `Authorization: Bearer <CRON_SECRET>`; no query-string secret or alternate header is accepted |

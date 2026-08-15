@@ -5,6 +5,7 @@ import { useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Plus, Trash2 } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
+import { YahooConnectionCard } from "@/components/yahoo-connection-card";
 import type { Position, ScoringPreset, RosterSlotType } from "@/lib/types";
 
 type CoefficientGroup = Record<string, number>;
@@ -138,6 +139,7 @@ export default function LeagueSetupPage() {
     <>
       <ConfigurationBanner message="Setup is the boundary between fixture screens and league-bound workflows. Nothing is treated as live until the server accepts this form." linkLabel="View settings" href="/league/settings" />
       <PageHeader eyebrow="League setup studio" title="Connect the context behind every decision." description="Define league basics, exact scoring coefficients, roster slots, and manager ownership. The server remains authoritative and reports validation or authentication failures." />
+      <div style={{ marginBottom: 20 }}><YahooConnectionCard /></div>
       <form onSubmit={submit} style={{ display: "grid", gap: 20 }}>
         <section className="card" style={{ display: "grid", gap: 14 }}>
           <h2 style={{ margin: 0, fontSize: 20 }}>1. League basics</h2>
