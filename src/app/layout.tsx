@@ -1,10 +1,11 @@
 import type { Metadata } from "next";
 import "./globals.css";
 import { AppNav } from "@/components/app-nav";
+import { CoachBot } from "@/components/coach-bot";
 
 export const metadata: Metadata = {
-  title: "Fantasy War Room",
-  description: "Evidence-backed fantasy football decisions.",
+  title: "Fantasy War Room — Evidence-Backed League Intelligence",
+  description: "League-aware fantasy football decision assistant built around four high-value workflows: Today, Draft, Lineup, Waivers.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
@@ -12,6 +13,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
     <html lang="en">
       <body>
         <main className="shell">{children}</main>
+        <CoachBot />
         <AppNav />
       </body>
     </html>

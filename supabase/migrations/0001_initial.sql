@@ -1,4 +1,4 @@
--- Fantasy War Room v0.1
+-- Fantasy War Room v0.1 Database Schema
 create extension if not exists pgcrypto;
 
 create table if not exists public.profiles (
@@ -28,6 +28,7 @@ create table if not exists public.players (
   team text,
   position text not null,
   status text,
+  bye_week int,
   birth_date date,
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()
@@ -70,7 +71,7 @@ create table if not exists public.player_snapshots (
 create table if not exists public.evidence (
   id uuid primary key default gen_random_uuid(),
   player_id uuid references public.players(id) on delete cascade,
-  type text not null,
+  type text not null check (type in ('injury','depth_chart','usage','transaction','news','projection')),
   source text not null,
   source_url text,
   summary text not null,
@@ -100,7 +101,7 @@ create table if not exists public.recommendations (
   id uuid primary key default gen_random_uuid(),
   league_id uuid not null references public.leagues(id) on delete cascade,
   roster_id uuid references public.rosters(id) on delete cascade,
-  kind text not null,
+  kind text not null check (kind in ('draft','start','sit','add','drop','hold','watch')),
   subject_player_id uuid not null references public.players(id) on delete cascade,
   alternative_player_id uuid references public.players(id) on delete set null,
   score int not null check (score between 0 and 100),
@@ -117,7 +118,7 @@ create table if not exists public.recommendations (
 
 create table if not exists public.scout_runs (
   id uuid primary key default gen_random_uuid(),
-  status text not null default 'running',
+  status text not null default 'running' check (status in ('running','completed','completed_with_errors','failed')),
   trigger text not null default 'cron',
   started_at timestamptz not null default now(),
   finished_at timestamptz,
@@ -126,11 +127,16 @@ create table if not exists public.scout_runs (
   created_at timestamptz not null default now()
 );
 
+-- Performance Indexes
+create index if not exists idx_player_id_map_lookup on public.player_id_map(provider, provider_player_id);
 create index if not exists idx_snapshots_player_time on public.player_snapshots(player_id, observed_at desc);
 create index if not exists idx_evidence_player_time on public.evidence(player_id, observed_at desc);
 create index if not exists idx_scores_league_kind on public.player_scores(league_id, kind, score desc);
 create index if not exists idx_recommendations_league_time on public.recommendations(league_id, computed_at desc);
+create index if not exists idx_rosters_league on public.rosters(league_id);
+create index if not exists idx_scout_runs_started on public.scout_runs(started_at desc);
 
+-- Enable RLS
 alter table public.profiles enable row level security;
 alter table public.leagues enable row level security;
 alter table public.rosters enable row level security;
@@ -140,7 +146,9 @@ alter table public.player_snapshots enable row level security;
 alter table public.evidence enable row level security;
 alter table public.player_scores enable row level security;
 alter table public.recommendations enable row level security;
+alter table public.scout_runs enable row level security;
 
+-- Row Level Security Policies
 create policy "profiles own row" on public.profiles for all using (auth.uid() = id) with check (auth.uid() = id);
 create policy "leagues owner access" on public.leagues for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 create policy "rosters via league owner" on public.rosters for all using (
@@ -149,12 +157,14 @@ create policy "rosters via league owner" on public.rosters for all using (
   exists (select 1 from public.leagues l where l.id = league_id and l.owner_id = auth.uid())
 );
 
--- Global intelligence is read-only to authenticated users. Service-role jobs write it.
-create policy "players auth read" on public.players for select to authenticated using (true);
-create policy "player map auth read" on public.player_id_map for select to authenticated using (true);
-create policy "snapshots auth read" on public.player_snapshots for select to authenticated using (true);
-create policy "evidence auth read" on public.evidence for select to authenticated using (true);
+-- Public Shared Intelligence Read Access
+create policy "players public read" on public.players for select using (true);
+create policy "player map public read" on public.player_id_map for select using (true);
+create policy "snapshots public read" on public.player_snapshots for select using (true);
+create policy "evidence public read" on public.evidence for select using (true);
+create policy "scout_runs public read" on public.scout_runs for select using (true);
 
+-- Scores & Recommendations Read Access
 create policy "scores via league owner or global" on public.player_scores for select using (
   league_id is null or exists (select 1 from public.leagues l where l.id = league_id and l.owner_id = auth.uid())
 );
