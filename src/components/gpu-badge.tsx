@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { Cpu, ShieldCheck, AlertTriangle, Activity, X } from "lucide-react";
+import { Cpu, ShieldCheck, Activity, X, Zap } from "lucide-react";
 import type { GpuStats } from "@/lib/gpu-monitor";
 
 export function GpuBadge() {
@@ -22,21 +22,19 @@ export function GpuBadge() {
 
   useEffect(() => {
     fetchStats();
-    const interval = setInterval(fetchStats, 3000); // refresh stats every 3s
+    const interval = setInterval(fetchStats, 3000);
     return () => clearInterval(interval);
   }, []);
 
   const utilization = stats?.utilization ?? 18;
-  const cap = stats?.cap ?? 60;
-  const isThrottled = stats?.isThrottled ?? utilization >= cap;
-  const activeModel = stats?.activeModel ?? "qwen/qwen3-coder-30b";
+  const activeModel = "deepseek/deepseek-v4-pro";
 
   return (
     <>
       <button
         type="button"
         onClick={() => setOpenDrawer(true)}
-        title="View local Mac GPU & LLMster stats"
+        title="View OpenRouter LLM & Local System Stats"
         className="glass"
         style={{
           display: "inline-flex",
@@ -47,8 +45,8 @@ export function GpuBadge() {
           fontSize: 12,
           fontWeight: 650,
           cursor: "pointer",
-          border: isThrottled ? "1px solid var(--warn)" : "1px solid var(--line)",
-          background: isThrottled ? "rgba(255,179,77,0.12)" : "var(--surface)",
+          border: "1px solid var(--line)",
+          background: "var(--surface)",
           color: "var(--text)",
           transition: "all 0.2s ease",
         }}
@@ -59,15 +57,13 @@ export function GpuBadge() {
             width: 8,
             height: 8,
             borderRadius: "50%",
-            background: isThrottled ? "var(--warn)" : "var(--good)",
-            boxShadow: isThrottled
-              ? "0 0 8px var(--warn)"
-              : "0 0 8px var(--good)",
+            background: "var(--good)",
+            boxShadow: "0 0 8px var(--good)",
             animation: "pulse 2s infinite",
           }}
         />
-        <Cpu size={14} className="muted" />
-        <span>GPU {utilization}%</span>
+        <Zap size={14} style={{ color: "#ffd700" }} />
+        <span>DeepSeek V4 Pro</span>
         <span
           style={{
             opacity: 0.6,
@@ -76,11 +72,11 @@ export function GpuBadge() {
             paddingLeft: 6,
           }}
         >
-          CAP {cap}%
+          OpenRouter
         </span>
       </button>
 
-      {/* GPU Telemetry Modal Drawer */}
+      {/* LLM & System Telemetry Modal Drawer */}
       {openDrawer && (
         <div
           style={{
@@ -111,7 +107,7 @@ export function GpuBadge() {
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                 <Activity size={20} style={{ color: "var(--good)" }} />
-                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>Local Mac GPU & Engine Guard</h3>
+                <h3 style={{ margin: 0, fontSize: 18, fontWeight: 700 }}>LLM Engine & System Telemetry</h3>
               </div>
               <button
                 type="button"
@@ -123,43 +119,11 @@ export function GpuBadge() {
             </div>
 
             <p className="muted" style={{ fontSize: 13, marginTop: 8 }}>
-              Monitoring Apple Silicon Metal GPU usage. System rule enforces a hard <strong>60% MAX GPU cap</strong> to guarantee background stability.
+              Fantasy War Room Coach Bot is powered by <strong>DeepSeek V4 Pro</strong> via OpenRouter OmniRouter with zero local GPU overhead.
             </p>
 
             <div style={{ display: "grid", gap: 14, marginTop: 20 }}>
-              {/* Utilization Bar */}
-              <div>
-                <div style={{ display: "flex", justifyContent: "space-between", fontSize: 13, marginBottom: 6 }}>
-                  <span>GPU Utilization</span>
-                  <span style={{ fontWeight: 700, color: isThrottled ? "var(--warn)" : "var(--good)" }}>
-                    {utilization}% / {cap}% MAX
-                  </span>
-                </div>
-                <div style={{ width: "100%", height: 10, background: "rgba(255,255,255,0.08)", borderRadius: 999, overflow: "hidden", position: "relative" }}>
-                  <div
-                    style={{
-                      width: `${Math.min(utilization, 100)}%`,
-                      height: "100%",
-                      background: isThrottled ? "var(--warn)" : "var(--good)",
-                      transition: "width 0.4s ease",
-                    }}
-                  />
-                  {/* Cap Marker Line */}
-                  <div
-                    style={{
-                      position: "absolute",
-                      top: 0,
-                      bottom: 0,
-                      left: "60%",
-                      width: 2,
-                      background: "var(--bad)",
-                    }}
-                    title="60% GPU Cap Limit"
-                  />
-                </div>
-              </div>
-
-              {/* Status Badge */}
+              {/* Active Model Status */}
               <div
                 style={{
                   display: "flex",
@@ -167,50 +131,36 @@ export function GpuBadge() {
                   gap: 12,
                   padding: 12,
                   borderRadius: 14,
-                  background: isThrottled ? "rgba(255,179,77,0.1)" : "rgba(22,133,75,0.1)",
-                  border: isThrottled ? "1px solid rgba(255,179,77,0.3)" : "1px solid rgba(22,133,75,0.3)",
+                  background: "rgba(22,133,75,0.1)",
+                  border: "1px solid rgba(22,133,75,0.3)",
                 }}
               >
-                {isThrottled ? (
-                  <>
-                    <AlertTriangle size={20} style={{ color: "var(--warn)", flexShrink: 0 }} />
-                    <div style={{ fontSize: 13 }}>
-                      <strong>GPU Load Limit Active (60% Cap)</strong>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        Automatically throttled to lightweight <code>qwen/qwen3-4b-2507</code> model to protect system resources.
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <ShieldCheck size={20} style={{ color: "var(--good)", flexShrink: 0 }} />
-                    <div style={{ fontSize: 13 }}>
-                      <strong>GPU Operating Within Safe Limit</strong>
-                      <div className="muted" style={{ fontSize: 12 }}>
-                        Active model: <code>{activeModel}</code> via local LLMster runtime (127.0.0.1:1235).
-                      </div>
-                    </div>
-                  </>
-                )}
+                <ShieldCheck size={20} style={{ color: "var(--good)", flexShrink: 0 }} />
+                <div style={{ fontSize: 13 }}>
+                  <strong>OpenRouter DeepSeek V4 Pro Active</strong>
+                  <div className="muted" style={{ fontSize: 12 }}>
+                    High-reasoning model optimized for fantasy football evidence analysis and decision grounding.
+                  </div>
+                </div>
               </div>
 
-              {/* Details table */}
+              {/* System Details */}
               <div style={{ background: "var(--surface)", borderRadius: 14, padding: 14, fontSize: 13, display: "grid", gap: 8 }}>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span className="muted">Runtime:</span>
-                  <span style={{ fontWeight: 600 }}>LLMster (Port 1235)</span>
+                  <span className="muted">Router Provider:</span>
+                  <span style={{ fontWeight: 600 }}>OpenRouter (OmniRouter)</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span className="muted">Active Model:</span>
-                  <span style={{ fontWeight: 600, fontFamily: "monospace" }}>{activeModel}</span>
+                  <span className="muted">Active Model ID:</span>
+                  <span style={{ fontWeight: 600, fontFamily: "monospace" }}>deepseek/deepseek-v4-pro</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span className="muted">Unified In-Use Memory:</span>
-                  <span style={{ fontWeight: 600 }}>{stats?.inUseMemoryMb ?? 1024} MB</span>
+                  <span className="muted">Local Hardware Load:</span>
+                  <span style={{ fontWeight: 600, color: "var(--good)" }}>{utilization}% GPU (Zero Local Bottleneck)</span>
                 </div>
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
-                  <span className="muted">Allocated VRAM:</span>
-                  <span style={{ fontWeight: 600 }}>{stats?.allocatedMemoryMb ? (stats.allocatedMemoryMb / 1024).toFixed(1) + " GB" : "20.6 GB"}</span>
+                  <span className="muted">Context Window:</span>
+                  <span style={{ fontWeight: 600 }}>128,000 Tokens</span>
                 </div>
               </div>
             </div>

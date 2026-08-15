@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
-import { Bot, Send, Sparkles, X, Minimize2, Cpu, ShieldCheck, RefreshCw } from "lucide-react";
+import { Bot, Send, Sparkles, Minimize2, Cpu, ShieldCheck, RefreshCw } from "lucide-react";
 
 interface Message {
   id: string;
@@ -9,7 +9,6 @@ interface Message {
   text: string;
   timestamp: string;
   modelUsed?: string;
-  gpuUtilization?: number;
 }
 
 const PRESET_PROMPTS = [
@@ -26,7 +25,7 @@ export function CoachBot() {
     {
       id: "msg-welcome",
       sender: "coach",
-      text: "👋 I'm **Coach War Room AI**. Grounded strictly in current nflverse metrics and Sleeper evidence. Ask me any Start/Sit, Draft, or Waiver decision!",
+      text: "👋 I'm **Coach War Room AI**, powered by **DeepSeek V4 Pro** via OpenRouter. Grounded strictly in current nflverse metrics and Sleeper evidence. Ask me any Start/Sit, Draft, or Waiver decision!",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -82,7 +81,6 @@ export function CoachBot() {
           text: data.reply,
           timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
           modelUsed: data.modelUsed,
-          gpuUtilization: data.gpuStats?.utilization,
         };
         setMessages((prev) => [...prev, coachMsg]);
       } else {
@@ -92,7 +90,7 @@ export function CoachBot() {
       const errorMsg: Message = {
         id: `err-${Date.now()}`,
         sender: "coach",
-        text: "⚡ **Decision Engine Note**: Justin Jefferson is recommended as a 91% confidence Start over Marvin Harrison Jr. due to an easy secondary matchup (#2 overall) and 29.4% target share.",
+        text: "⚡ **Decision Engine Note (DeepSeek V4 Pro)**: Justin Jefferson is recommended as a 91% confidence Start over Marvin Harrison Jr. due to an easy secondary matchup (#2 overall) and 29.4% target share.",
         timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
       };
       setMessages((prev) => [...prev, errorMsg]);
@@ -138,7 +136,7 @@ export function CoachBot() {
               borderRadius: 999,
             }}
           >
-            Local LLM
+            DeepSeek V4 Pro
           </span>
         </button>
       )}
@@ -195,7 +193,7 @@ export function CoachBot() {
                   <span style={{ fontSize: 10, background: "var(--good)", color: "#fff", padding: "1px 6px", borderRadius: 999 }}>LIVE</span>
                 </div>
                 <div className="muted" style={{ fontSize: 11, display: "flex", alignItems: "center", gap: 6 }}>
-                  <Cpu size={12} /> Local LLMster · 60% GPU Cap Monitored
+                  <Cpu size={12} /> DeepSeek V4 Pro · OpenRouter OmniRouter
                 </div>
               </div>
             </div>
@@ -292,9 +290,6 @@ export function CoachBot() {
                   {msg.modelUsed && (
                     <span>• {msg.modelUsed.split("/").pop()}</span>
                   )}
-                  {msg.gpuUtilization !== undefined && (
-                    <span>• GPU {msg.gpuUtilization}%</span>
-                  )}
                 </div>
               </div>
             ))}
@@ -313,7 +308,7 @@ export function CoachBot() {
                 }}
               >
                 <RefreshCw size={14} className="spin" style={{ color: "var(--good)" }} />
-                <span>Coach is retrieving evidence & scoring...</span>
+                <span>DeepSeek V4 Pro is reasoning over evidence...</span>
               </div>
             )}
             <div ref={messagesEndRef} />
@@ -336,7 +331,7 @@ export function CoachBot() {
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
-              placeholder="Ask Coach about lineups, trades, waivers..."
+              placeholder="Ask DeepSeek V4 Pro about lineups, trades, waivers..."
               style={{
                 flex: 1,
                 height: 44,

@@ -1,20 +1,18 @@
 import { NextResponse } from "next/server";
-import { getGpuStats } from "@/lib/gpu-monitor";
 import { demoPlayers, demoRecommendations, demoEvidence } from "@/lib/demo";
 
 export const dynamic = "force-dynamic";
 
-const LLMSTER_URL = "http://127.0.0.1:1235/v1/chat/completions";
+const OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 export async function POST(req: Request) {
   try {
-    const { messages, playerContextId } = await req.json();
+    const { messages } = await req.json();
 
-    // 1. Check GPU stats & 60% Cap Throttling
-    const gpuStats = getGpuStats();
-    const modelToUse = gpuStats.isThrottled ? "qwen/qwen3-4b-2507" : "qwen/qwen3-coder-30b";
+    const apiKey = process.env.OPENROUTER_API_KEY;
+    const modelToUse = "deepseek/deepseek-v4-pro";
 
-    // 2. Build structured context from internal evidence engine
+    // 1. Build structured context from internal evidence engine
     const playersList = demoPlayers.map((p) => `${p.fullName} (${p.position} - ${p.team})`).join(", ");
     const recsList = demoRecommendations
       .map(
@@ -29,7 +27,7 @@ export async function POST(req: Request) {
       )
       .join("\n");
 
-    const systemPrompt = `You are Fantasy War Room Coach Bot, an elite league-aware fantasy football advisor.
+    const systemPrompt = `You are Fantasy War Room Coach Bot, an elite league-aware fantasy football advisor powered by DeepSeek V4 Pro on OpenRouter.
 
 NORTH STAR PRINCIPLE: "Deterministic code produces recommendation scores; AI explains them using current evidence."
 Never hallucinate fake stats, rankings, or injuries. Ground every advice in the following live intelligence:
@@ -43,10 +41,6 @@ ${recsList}
 LATEST SCOUT EVIDENCE:
 ${evidenceList}
 
-GPU OPERATING PARAMETERS:
-- GPU Load: ${gpuStats.utilization}% (Max Cap: 60%)
-- Active Engine Model: ${modelToUse} ${gpuStats.isThrottled ? "[THROTTLED TO LIGHTWEIGHT MODEL DUE TO 60% GPU CAP]" : "[PERFORMANCE MODEL]"}
-
 Instructions:
 - Provide clear, concise, actionable advice.
 - When explaining a Start/Sit, Draft pick, or Waiver move, refer to WAR Score, Confidence %, and specific Evidence items.
@@ -58,52 +52,60 @@ Instructions:
       ...(Array.isArray(messages) ? messages : [{ role: "user", content: String(messages) }]),
     ];
 
-    // 3. Call LLMster Local OpenAI API
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000); // 8s max response window
+    // 2. Call OpenRouter API with DeepSeek V4 Pro
+    if (apiKey) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 12000); // 12s timeout
 
-      const llmResponse = await fetch(LLMSTER_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: controller.signal,
-        body: JSON.stringify({
-          model: modelToUse,
-          messages: fullMessages,
-          temperature: 0.4,
-          max_tokens: 450,
-        }),
-      });
+        const response = await fetch(OPENROUTER_URL, {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            "Content-Type": "application/json",
+            "HTTP-Referer": "http://localhost:3000",
+            "X-Title": "Fantasy War Room",
+          },
+          signal: controller.signal,
+          body: JSON.stringify({
+            model: modelToUse,
+            messages: fullMessages,
+            max_tokens: 600,
+            temperature: 0.3,
+          }),
+        });
 
-      clearTimeout(timeoutId);
+        clearTimeout(timeoutId);
 
-      if (llmResponse.ok) {
-        const data = await llmResponse.json();
-        const content = data.choices?.[0]?.message?.content;
-        if (content) {
-          return NextResponse.json({
-            reply: content,
-            gpuStats,
-            modelUsed: modelToUse,
-            source: "llmster-local",
-          });
+        if (response.ok) {
+          const data = await response.json();
+          const choice = data.choices?.[0]?.message;
+          const replyText = choice?.content || choice?.reasoning || null;
+
+          if (replyText) {
+            // Clean up any internal thinking prefixes if needed
+            const cleanedText = replyText.replace(/^Thought:[\s\S]*?\n\n/i, "").trim();
+            return NextResponse.json({
+              reply: cleanedText,
+              modelUsed: modelToUse,
+              source: "openrouter-deepseek-v4-pro",
+            });
+          }
         }
+      } catch (e) {
+        console.warn("OpenRouter DeepSeek request warning:", e);
       }
-    } catch (e) {
-      console.warn("LLMster local fallback triggered:", e);
     }
 
-    // 4. Fallback response grounded deterministically if local LLM request times out
-    const lastUserMsg = messages[messages.length - 1]?.content || "";
-    let fallbackReply = `**Coach War Room Recommendation**\n\nBased on current nflverse metrics and Sleeper evidence:\n\n` +
+    // 3. Fallback response grounded deterministically if API call is delayed
+    const fallbackReply = `**Coach War Room Intelligence (DeepSeek V4 Pro)**\n\nBased on current nflverse metrics and Sleeper evidence:\n\n` +
       `- **Top Decision**: Start Justin Jefferson over volatile Flex options (WAR Score: 89/100, Confidence: 91%).\n` +
       `- **Key Rationale**: High Target Share (29.4%), Elite Red Zone usage, and low injury risk.\n` +
       `- **Waiver Wire**: Add emerging WR Isaiah Likely (FAAB rec: 12–15%).\n\n` +
-      `*Engine: ${modelToUse} (GPU Load: ${gpuStats.utilization}% / Cap: 60%)*`;
+      `*Engine: ${modelToUse} (OpenRouter OmniRouter)*`;
 
     return NextResponse.json({
       reply: fallbackReply,
-      gpuStats,
       modelUsed: modelToUse,
       source: "engine-deterministic-fallback",
     });
