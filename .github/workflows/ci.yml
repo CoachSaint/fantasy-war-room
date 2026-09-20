@@ -1,9 +1,8 @@
 name: CI
 
+# COST CONTROL (2026-09-20): automatic GitHub Actions disabled; run manually only.
 on:
-  push:
-    branches: [main]
-  pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read
