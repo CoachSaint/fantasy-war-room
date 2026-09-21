@@ -43,6 +43,30 @@ if [ "$fail" -eq 0 ]; then
   echo "ok: only allowed built-in substitutions (\$COMMIT_SHA, \$REPO_FULL_NAME) appear in $CONFIG — no inline shell vars for Cloud Build to misparse"
 fi
 
+# --- structural guard (added 2026-09-21) ------------------------------------
+# Every check above is a grep-based regression guard for a SPECIFIC past bug.
+# None of them notices if cloudbuild-pr.yaml stops being a valid Cloud Build
+# config at all. PROVEN by mutation 2026-09-21: renaming `steps:` to
+# `steps_MUTATED:` left this selftest exit 0. A silently dead config means NO
+# CI lane at all, which is strictly worse than the GitHub Actions it replaces.
+# Dependency-free on purpose: this runs inside CI containers with no pyyaml.
+if ! grep -qE '^steps:[[:space:]]*$' "$CONFIG"; then
+  echo "FAIL: $CONFIG has no top-level 'steps:' key — it is not a valid Cloud Build config" >&2
+  fail=1
+elif ! awk '/^steps:[[:space:]]*$/{s=1;next} /^[A-Za-z_]/{s=0} s && /^[[:space:]]*-[[:space:]]*(id|name):/{items++} s && /^[[:space:]]+name:[[:space:]]/{names++} END{exit !(items>0 && names>0)}' "$CONFIG"; then
+  echo "FAIL: $CONFIG declares 'steps:' but has no list item carrying a 'name:' image — the build would run nothing" >&2
+  fail=1
+else
+  echo "ok: $CONFIG has a top-level steps: list with at least one named step"
+fi
+
+if grep -q "$(printf '\t')" "$CONFIG"; then
+  echo "FAIL: $CONFIG contains a TAB character — YAML forbids tabs for indentation" >&2
+  fail=1
+else
+  echo "ok: $CONFIG is tab-free"
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "CLOUDBUILD CONFIG SELFTEST FAILED" >&2
   exit 1
