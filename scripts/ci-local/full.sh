@@ -20,6 +20,12 @@ source scripts/ci-local/common.sh
 require_node_major 20
 assert_expected_sha
 
+echo "==> cloudbuild-pr.yaml config selftest (regression guard against \$-substitution collisions)"
+if ! bash scripts/ci-local/cloudbuild-config.selftest.sh; then
+  echo "REFUSING: cloudbuild-config selftest failed" >&2
+  exit 1
+fi
+
 set +e
 
 echo "==> npm ci"

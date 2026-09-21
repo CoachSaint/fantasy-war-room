@@ -35,6 +35,7 @@ steps:
         set -euo pipefail
         bash scripts/ci-local/assert-identity.sh "$COMMIT_SHA" "$REPO_FULL_NAME" .
         bash scripts/ci-local/assert-identity.selftest.sh
+        bash scripts/ci-local/cloudbuild-config.selftest.sh
 
   - id: full-ci
     name: 'node:20'
