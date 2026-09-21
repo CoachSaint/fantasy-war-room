@@ -1,0 +1,52 @@
+# Google Cloud Build — PR-CI lane for CoachSaint/fantasy-war-room.
+# Verification only: this config never deploys and never mutates production.
+#
+# Intended trigger: a 2nd-gen Cloud Build GitHub App PR trigger connected to
+# this repo, run under a per-repo dedicated CI service account (no secrets
+# are assumed or embedded here — SA binding and trigger creation are
+# external, out-of-band operator steps; see docs/CI_LOCAL_RUNBOOK.md).
+# Cloud Build's own NATIVE GitHub check is what gets reported, bound by the
+# platform to the exact PR head SHA — this config never calls `gh`, never
+# reads a GitHub token, and never writes a status of its own.
+#
+# Adding this file makes no trigger, repository connection, or
+# branch-protection change — it is inert until an operator wires it up.
+#
+# Both $COMMIT_SHA and $REPO_FULL_NAME below are Cloud Build BUILT-IN
+# substitutions (REPO_FULL_NAME is populated automatically for 2nd-gen
+# GitHub triggers) — never custom ($_-prefixed) substitutions. All gate
+# logic lives in the checked-in scripts/ci-local/*.sh files, not inline
+# here, so nothing in this file looks like a shell variable Cloud Build's
+# own substitution parser could misread.
+#
+# No browser-driven tests exist in this repo (vitest environment is "node",
+# no playwright/puppeteer/testing-library in package.json) — confirmed by
+# reading vitest.config.mjs and package.json before authoring this file. A
+# plain node:20 image is therefore sufficient; no Chromium-capable step is
+# needed.
+
+steps:
+  - id: assert-identity
+    name: 'gcr.io/cloud-builders/git'
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        bash scripts/ci-local/assert-identity.sh "$COMMIT_SHA" "$REPO_FULL_NAME" .
+        bash scripts/ci-local/assert-identity.selftest.sh
+        bash scripts/ci-local/cloudbuild-config.selftest.sh
+
+  - id: full-ci
+    name: 'node:20'
+    entrypoint: bash
+    args:
+      - -c
+      - 'bash scripts/ci-local/full.sh'
+    env:
+      - 'CI_LOCAL_EXPECTED_SHA=$COMMIT_SHA'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 1800s
