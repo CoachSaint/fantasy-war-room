@@ -1,23 +1,26 @@
-# Yahoo Fantasy integration queue
+# Yahoo Fantasy integration setup
 
 ## Current state
 
-The read-only Yahoo integration is implemented but deliberately inert until Yahoo approves the developer application and the server configuration is complete. Missing credentials return `yahoo_credentials_pending`; they never trigger a provider request or a partial import.
+Yahoo granted Fantasy Sports as a permission on the developer account on September 22, 2026. This does **not** add it to an existing application. The read-only integration remains inert until a **new** Yahoo application has that permission, its Client ID has been submitted to Yahoo for confirmation, and the server configuration is complete. Missing credentials return `yahoo_credentials_pending`; they never trigger a provider request or a partial import.
 
 ## Owner activation checklist
 
-1. In Yahoo Developer Network, create or finish approval for a Web Application with **Fantasy Sports: Read** access. Do not request write access.
+1. Sign in to [Yahoo Developer Network](https://developer.yahoo.com/apps/) with the developer account that received the Fantasy Sports permission. Create a **new Web Application** named Fantasy War Room. Existing applications cannot acquire the newly granted permission. Select **Fantasy Sports: Read** under API Permissions; do not request write access.
 2. Register the stable production callback exactly as:
    `https://fantasy-war-room-pi.vercel.app/api/integrations/yahoo/callback`
-3. Apply migrations in order: `0001_initial.sql`, `0002_workspace_learning.sql`, then `0003_yahoo_integration.sql`.
-4. Add these server-only values to the intended Vercel environment:
+   Confirm this is still the actual production domain before saving the Yahoo app. A preview domain or localhost requires its own registered callback and matching `YAHOO_REDIRECT_URI` in that environment.
+3. Create the Yahoo app, then submit its **Client ID (Consumer Key)** at [Yahoo Fantasy application confirmation](https://sports.yahoo.com/developer/application-confirmation/). Do not submit the Client Secret. Record Yahoo's confirmation result before enabling live imports.
+4. Identify the Supabase project actually bound to this deployment, and inspect its applied migrations before changing it. Apply only pending migrations in order: `0001_initial.sql`, `0002_workspace_learning.sql`, then `0003_yahoo_integration.sql`. Do not point this app at another product's database.
+5. Add these server-only values to the intended Vercel environment:
    - `YAHOO_CLIENT_ID`
    - `YAHOO_CLIENT_SECRET`
    - `YAHOO_REDIRECT_URI`
    - `YAHOO_TOKEN_ENCRYPTION_KEY` (32 random bytes, base64 encoded; retain securely because rotating it requires reconnecting accounts)
    - `YAHOO_OAUTH_SCOPE` only if Yahoo explicitly assigns a scope string
-5. Redeploy, authenticate to Fantasy War Room, open `/league/setup`, and select **Connect Yahoo**.
-6. After consent, select **Import Yahoo roster**. Confirm league, every roster, starters/bench/IR, scoring payload, roster slots, FAAB/waiver priority when supplied, and the current user's league membership.
+   Use the new app's credentials, replacing any old app credentials. Generate the encryption key once and retain it securely. Do not change it during a client-ID rotation if stored Yahoo tokens must remain decryptable; users must reconnect under the new Yahoo app.
+6. Redeploy, authenticate to Fantasy War Room, open `/league/setup`, and select **Connect Yahoo**.
+7. After consent, select **Import Yahoo roster**. Confirm league, every roster, starters/bench/IR, scoring payload, roster slots, FAAB/waiver priority when supplied, and the current user's league membership.
 
 Never place the client secret, encryption key, access token, refresh token, authorization code, or OAuth state in source control, screenshots, URLs beyond Yahoo's one-time authorization code callback, or client-side code.
 
