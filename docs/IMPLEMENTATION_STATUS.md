@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated: 2026-08-15
+Updated: 2026-09-23
 
 ## Decision
 
@@ -28,7 +28,7 @@ Updated: 2026-08-15
 | League identity | Setup contract and persistence route exist | Authenticated real league setup, membership/roster mapping, persisted result |
 | Setup atomicity | Every write and compensating cleanup result is checked | Transactional RPC or equivalent plus injected-failure proof before self-service production use |
 | Sleeper | Public adapter exists; no account/league is configured here | Real league selection, current NFL state, roster/player ID verification |
-| Yahoo | Read-only OAuth/import code and migration are present but inert without credentials | Yahoo developer approval, exact callback registration, migration 0003, server-only values, consent, and live import verification |
+| Yahoo | Developer account has Fantasy Sports permission; read-only OAuth/import code remains inert without credentials | Create a new Yahoo app with Fantasy Sports: Read, submit its Client ID for confirmation, register exact callback, verify migration 0003, configure server-only values, consent, and verify live import |
 | nflverse | Release assets and bounded parser exist; some seasons/assets may be unavailable | Current season/week asset availability, timestamps, sample data validation |
 | Materialization | Scout honestly marks sync, normalization, scoring, diff, and recommendation materialization as skipped until configured | Real provider-to-canonical-player sync, snapshot/evidence persistence, recommendations, and repeatable run |
 | Coach | Evidence-constrained OpenRouter path exists; demo path is explicit | `OPENROUTER_API_KEY`, provider/model policy, cost/rate checks, evidence-grounded live response |
