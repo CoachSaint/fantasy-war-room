@@ -21,6 +21,23 @@ const initialState: ConnectionState = {
   leagueCount: 0,
 };
 
+const callbackMessages: Record<string, string> = {
+  connected: "Yahoo account connected. Import your leagues and rosters below.",
+  access_denied: "Yahoo access was declined. You can try connecting again.",
+  credentials_pending: "Yahoo app credentials are not configured on this deployment.",
+  database_unavailable: "The app database is not configured on this deployment.",
+  migration_required: "The Yahoo database migration has not been applied.",
+  authentication_required: "Sign in to Fantasy War Room before connecting Yahoo.",
+  authentication_unavailable: "Fantasy War Room sign-in is temporarily unavailable.",
+  invalid_callback: "Yahoo returned an invalid authorization response. Try connecting again.",
+  authorization_failed: "Yahoo authorization did not complete. Try connecting again.",
+  state_mismatch: "The Yahoo connection expired or did not match this session. Try connecting again.",
+  refresh_token_missing: "Yahoo did not provide a refresh token. Try reconnecting the new app.",
+  persistence_failed: "The Yahoo connection could not be saved. Try again later.",
+  sync_in_progress: "A Yahoo import is running. Try connecting again after it finishes.",
+  token_exchange_failed: "Yahoo could not exchange the authorization code. Check the new app credentials and exact callback URL.",
+};
+
 export function YahooConnectionCard() {
   const [state, setState] = useState<ConnectionState>(initialState);
   const [syncing, setSyncing] = useState(false);
@@ -49,7 +66,12 @@ export function YahooConnectionCard() {
   }, []);
 
   useEffect(() => {
-    void loadStatus();
+    void loadStatus().then(() => {
+      const callbackStatus = new URLSearchParams(window.location.search).get("yahoo");
+      if (callbackStatus && callbackMessages[callbackStatus]) {
+        setState((previous) => ({ ...previous, message: callbackMessages[callbackStatus] }));
+      }
+    });
   }, [loadStatus]);
 
   const sync = async () => {
@@ -101,7 +123,7 @@ export function YahooConnectionCard() {
           </div>
         </div>
         <span style={{ borderRadius: 999, padding: "5px 10px", fontSize: 11, fontWeight: 800, background: state.connected ? "rgba(22,133,75,0.12)" : "var(--surface)", color: state.connected ? "var(--good)" : "var(--muted)", border: "1px solid var(--line)" }}>
-          {state.loading ? "CHECKING" : state.connected ? "CONNECTED" : waiting ? "AWAITING APPROVAL" : "READY TO CONNECT"}
+          {state.loading ? "CHECKING" : state.connected ? "CONNECTED" : waiting ? "SETUP REQUIRED" : "READY TO CONNECT"}
         </span>
       </div>
 
@@ -111,7 +133,7 @@ export function YahooConnectionCard() {
         {state.lastSyncedAt && <span className="muted">Last sync {new Date(state.lastSyncedAt).toLocaleString()}</span>}
       </div>
 
-      {waiting && <p className="muted" style={{ margin: 0, fontSize: 13 }}>The integration code is queued. After Yahoo approves the developer application, add the four server-only environment values and apply migration 0003; this button will activate without another build.</p>}
+      {waiting && <p className="muted" style={{ margin: 0, fontSize: 13 }}>Create a new Yahoo developer app with Fantasy Sports: Read, submit its Client ID to Yahoo for confirmation, then configure the four server-only environment values and the Yahoo database migration. An existing Yahoo app will not pick up the permission.</p>}
       {state.message && <div role="status" style={{ padding: 10, borderRadius: 10, background: "var(--surface)", fontSize: 12 }}>{state.message}</div>}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
