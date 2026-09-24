@@ -68,7 +68,7 @@ export function YahooConnectionCard() {
   useEffect(() => {
     void loadStatus().then(() => {
       const callbackStatus = new URLSearchParams(window.location.search).get("yahoo");
-      if (callbackStatus && callbackMessages[callbackStatus]) {
+      if (callbackStatus && Object.hasOwn(callbackMessages, callbackStatus)) {
         setState((previous) => ({ ...previous, message: callbackMessages[callbackStatus] }));
       }
     });
@@ -143,6 +143,7 @@ export function YahooConnectionCard() {
         {state.connected && <button type="button" disabled={syncing} onClick={sync} style={{ minHeight: 40, borderRadius: 999, padding: "0 15px", display: "inline-flex", alignItems: "center", gap: 7, border: 0, background: "var(--text)", color: "var(--bg)", fontWeight: 800, cursor: syncing ? "wait" : "pointer" }}>{syncing ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />} {syncing ? "Importing…" : "Import Yahoo roster"}</button>}
         {state.connected && <button type="button" disabled={syncing} onClick={disconnect} style={{ minHeight: 40, borderRadius: 999, padding: "0 15px", border: "1px solid var(--line)", background: "transparent", color: "var(--muted)", fontWeight: 700, cursor: "pointer" }}>Disconnect</button>}
       </div>
+      <p className="muted" style={{ margin: 0, fontSize: 11 }}>Powered by JTF Software Solutions</p>
     </section>
   );
 }
