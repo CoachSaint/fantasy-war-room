@@ -11,7 +11,7 @@ Yahoo granted Fantasy Sports as a permission on the developer account on Septemb
    `https://fantasy-war-room-pi.vercel.app/api/integrations/yahoo/callback`
    Confirm this is still the actual production domain before saving the Yahoo app. A preview domain or localhost requires its own registered callback and matching `YAHOO_REDIRECT_URI` in that environment.
 3. Create the Yahoo app, then submit its **Client ID (Consumer Key)** at [Yahoo Fantasy application confirmation](https://sports.yahoo.com/developer/application-confirmation/). Do not submit the Client Secret. Record Yahoo's confirmation result before enabling live imports.
-4. Identify the Supabase project actually bound to this deployment, and inspect its applied migrations before changing it. Apply only pending migrations in order: `0001_initial.sql`, `0002_workspace_learning.sql`, then `0003_yahoo_integration.sql`. Do not point this app at another product's database.
+4. Identify the Supabase project actually bound to this deployment, and inspect its applied migrations before changing it. Apply only pending migrations in order: `0001_initial.sql`, `0002_workspace_learning.sql`, `0003_yahoo_integration.sql`, then `0004_yahoo_weekly_matchups.sql`. Do not point this app at another product's database.
 5. Add these server-only values to the intended Vercel environment:
    - `YAHOO_CLIENT_ID`
    - `YAHOO_CLIENT_SECRET`
@@ -33,13 +33,13 @@ Never place the client secret, encryption key, access token, refresh token, auth
 - `POST /api/integrations/yahoo/sync` takes a 30-minute versioned database lease before refreshing or importing, persists a rotated refresh token, discovers the user's NFL leagues, fetches league settings and every team roster, validates required provider structures, and writes league/roster/provider-player mappings. The callback participates in the same compare-and-swap version so reconnect and sync cannot replace each other's credentials.
 - New Yahoo-only player identities are marked `provider_only` and placed in a service-role reconciliation queue. They are not silently joined by display name or presented as resolved cross-provider identities.
 
-The sync path is read-only with respect to Yahoo. It never submits lineup, waiver, trade, or roster mutations.
+The sync path is read-only with respect to Yahoo. It never submits lineup, waiver, trade, or roster mutations. For each imported head-to-head league it also fetches the current-week scoreboard, validates both teams against imported rosters, and stores matchup scores, projections, status, and winner in `league_week_matchups`. It does not fetch historical or future weeks.
 
 Yahoo synchronization is currently a checked multi-statement import, not a single database transaction. Replacement rows are written before stale-row cleanup so failed retries preserve the previous snapshot, but keep the full-production gate closed until injected live-database failures prove retry behavior or the import is moved behind a transactional database boundary.
 
 ### Matchup boundary
 
-The importer does not fetch or persist Yahoo weekly matchups. The current schema has no league-week matchup relation, and `leagues.scoring` contains scoring rules rather than schedule data. Matchup import needs an explicit schema, access policy, and retry/update contract before it can be added safely. A successful roster sync must not be represented as a matchup import.
+Migration `0004_yahoo_weekly_matchups.sql` adds league-scoped current-week matchup storage and a read policy for authenticated league members. It has passed a disposable owner/outsider/anonymous RLS probe on the dedicated project. No live Yahoo scoreboard or Mason roster has been imported yet, so provider parsing and end-to-end counts remain unproven. Leagues without a valid two-team current-week scoreboard currently fail the sync explicitly; historical and future schedule import remain out of scope.
 
 ## Verification gate after approval
 

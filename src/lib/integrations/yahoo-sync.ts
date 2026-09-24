@@ -12,6 +12,7 @@ export interface YahooSyncSummary {
   leaguesProcessed: number;
   rostersProcessed: number;
   playersProcessed: number;
+  matchupsProcessed: number;
   leagueIds: string[];
 }
 
@@ -87,7 +88,7 @@ async function persistYahooLeague(
   connectionId: string,
   externalUserId: string | null,
   imported: YahooLeagueImport
-): Promise<{ leagueId: string; rosterId: string; rosterCount: number; playerCount: number }> {
+): Promise<{ leagueId: string; rosterId: string; rosterCount: number; playerCount: number; matchupCount: number }> {
   const now = new Date().toISOString();
   const existingLeague = await client
     .from("leagues")
@@ -209,8 +210,41 @@ async function persistYahooLeague(
   }, { onConflict: "user_id,provider,provider_league_id,provider_team_id" });
   if (link.error) throw new YahooSyncError("yahoo_link_create_failed");
 
+  const matchupRows = imported.matchups.map((matchup) => {
+    const teamA = rosterIdByTeam.get(matchup.teamKeys[0]);
+    const teamB = rosterIdByTeam.get(matchup.teamKeys[1]);
+    const winner = matchup.winnerTeamKey ? rosterIdByTeam.get(matchup.winnerTeamKey) : null;
+    if (!teamA || !teamB || (matchup.winnerTeamKey && !winner)) throw new YahooSyncError("yahoo_matchup_roster_missing");
+    return {
+      league_id: leagueId,
+      provider: "yahoo",
+      week: matchup.week,
+      provider_matchup_key: matchup.teamKeys.join("|"),
+      team_a_roster_id: teamA,
+      team_b_roster_id: teamB,
+      team_a_points: matchup.points[0],
+      team_b_points: matchup.points[1],
+      team_a_projected_points: matchup.projectedPoints[0],
+      team_b_projected_points: matchup.projectedPoints[1],
+      winner_roster_id: winner,
+      status: matchup.status,
+      is_tied: matchup.isTied,
+      is_playoffs: matchup.isPlayoffs,
+      observed_at: now,
+    };
+  });
+  const matchupResult = await client.from("league_week_matchups")
+    .upsert(matchupRows, { onConflict: "league_id,week,provider_matchup_key" });
+  if (matchupResult.error) throw new YahooSyncError("yahoo_matchups_create_failed");
+
   // Stale-row cleanup happens only after every replacement row and ownership
   // link has been written. A mid-sync failure therefore preserves prior data.
+  const currentMatchupKeys = matchupRows.map((row) => JSON.stringify(row.provider_matchup_key)).join(",");
+  const staleMatchups = await client.from("league_week_matchups").delete()
+    .eq("league_id", leagueId)
+    .eq("week", imported.currentWeek)
+    .not("provider_matchup_key", "in", `(${currentMatchupKeys})`);
+  if (staleMatchups.error) throw new YahooSyncError("yahoo_matchups_cleanup_failed");
   const staleSlots = await client.from("roster_slot_definitions").delete().eq("league_id", leagueId).gte("slot_order", expandedSlots.length);
   if (staleSlots.error) throw new YahooSyncError("yahoo_roster_slots_cleanup_failed");
   for (const team of imported.teams) {
@@ -228,7 +262,7 @@ async function persistYahooLeague(
     .not("provider_roster_id", "in", `(${currentTeamKeys})`);
   if (staleRosters.error) throw new YahooSyncError("yahoo_rosters_cleanup_failed");
 
-  return { leagueId, rosterId: ownedRosterId, rosterCount: imported.teams.length, playerCount: playerIds.size };
+  return { leagueId, rosterId: ownedRosterId, rosterCount: imported.teams.length, playerCount: playerIds.size, matchupCount: matchupRows.length };
 }
 
 export async function persistYahooImports(
@@ -246,6 +280,7 @@ export async function persistYahooImports(
     leaguesProcessed: results.length,
     rostersProcessed: results.reduce((sum, result) => sum + result.rosterCount, 0),
     playersProcessed: results.reduce((sum, result) => sum + result.playerCount, 0),
+    matchupsProcessed: results.reduce((sum, result) => sum + result.matchupCount, 0),
     leagueIds: results.map((result) => result.leagueId),
   };
 }

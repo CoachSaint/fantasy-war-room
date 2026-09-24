@@ -23,13 +23,13 @@ Updated: 2026-09-24
 
 | Gate | Current boundary | Owner evidence required |
 | --- | --- | --- |
-| Supabase | Code supports browser/admin clients; credentials may be absent | Project URL/keys, Auth users, migration application, connected health check |
-| Schema | `0001` then `0002` are present in the repository | Exact applied/pending migration output and RLS policy verification |
+| Supabase | Dedicated free Nano project `fswsefqqlltmaktiqwge` is healthy; Production Vercel Supabase variable names are set but the current deployment has not been rebuilt with them | Auth identities, deployment binding, connected health check, and live access checks |
+| Schema | `0001` through `0004` are applied on the dedicated project; a disposable owner/outsider/anonymous matchup RLS probe passed and was cleaned up | Recheck exact applied/pending history before promotion and prove full user/membership isolation |
 | League identity | Setup contract and persistence route exist | Authenticated real league setup, membership/roster mapping, persisted result |
 | Setup atomicity | Every write and compensating cleanup result is checked | Transactional RPC or equivalent plus injected-failure proof before self-service production use |
 | Sleeper | Public adapter exists; no account/league is configured here | Real league selection, current NFL state, roster/player ID verification |
 | Yahoo | Production Vercel has server-side OAuth variable names set, but the current deployment still reports `awaiting_credentials`; a new deployment, Yahoo confirmation, and live consent/import have not been proven | Confirm the new Yahoo app's Fantasy Sports: Read permission and Client ID approval; verify migration 0003 and exact callback; redeploy only after the app-specific database is bound; then prove consent and live import |
-| Yahoo matchups | League settings, teams, and rosters are imported; weekly matchups are not fetched or persisted and the schema has no matchup relation | Approve a league-week matchup schema and RLS/retry contract, then implement and verify matchup import against a bound test database |
+| Yahoo matchups | Current-week scoreboard fetch, normalization, persistence, schema and member-only RLS are implemented; no real Yahoo response or import is yet proven | Complete an authenticated Yahoo consent/sync and verify roster and matchup rows/counts against Yahoo's current-week scoreboard |
 | nflverse | Release assets and bounded parser exist; some seasons/assets may be unavailable | Current season/week asset availability, timestamps, sample data validation |
 | Materialization | Scout honestly marks sync, normalization, scoring, diff, and recommendation materialization as skipped until configured | Real provider-to-canonical-player sync, snapshot/evidence persistence, recommendations, and repeatable run |
 | Coach | Evidence-constrained OpenRouter path exists; demo path is explicit | `OPENROUTER_API_KEY`, provider/model policy, cost/rate checks, evidence-grounded live response |

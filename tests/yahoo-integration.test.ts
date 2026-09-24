@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizeYahooLeagueImport, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
+import { normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
 import {
   buildYahooAuthorizationUrl,
   createYahooOAuthState,
@@ -113,12 +113,20 @@ describe("Yahoo provider normalization", () => {
       { stat_modifiers: { stats: { 0: { stat: [{ stat_id: "4" }, { value: "4" }] }, 1: { stat: [{ stat_id: "10" }, { value: "0.5" }] } } } },
     ] }] } };
     const teams = { fantasy_content: { league: [{ teams: { 0: ownedTeam, 1: otherTeam } }] } };
+    const matchup = [
+      { week: "4" }, { status: "midevent" }, { is_playoffs: "0" },
+      { teams: {
+        0: { team: [[{ team_key: "449.l.123.t.4" }, { team_points: { total: "81.25" } }, { team_projected_points: { total: "110.50" } }]] },
+        1: { team: [[{ team_key: "449.l.123.t.8" }, { team_points: { total: "79.00" } }, { team_projected_points: { total: "99.25" } }]] },
+      } },
+    ];
+    const scoreboard = { fantasy_content: { league: [{ scoreboard: [{ matchups: { 0: { matchup } } }] }] } };
     const player = (teamKey: string, playerKey: string, name: string, selected: string) => ({ fantasy_content: { team: [[{ team_key: teamKey }, { roster: { players: { 0: { player: [[{ player_key: playerKey }, { player_id: playerKey.split(".").pop() }, { name: { full: name } }, { editorial_team_abbr: "KC" }, { display_position: "QB" }, { selected_position: [{ position: selected }] }]] } } } }]] } });
     const rosterPayloads = new Map<string, unknown>([
       ["449.l.123.t.4", player("449.l.123.t.4", "449.p.1", "Starter One", "QB")],
       ["449.l.123.t.8", player("449.l.123.t.8", "449.p.2", "Bench Two", "BN")],
     ]);
-    const imports = normalizeYahooLeagueImport(metadata, settings, teams, rosterPayloads, "449.l.123.t.4");
+    const imports = normalizeYahooLeagueImport(metadata, settings, teams, scoreboard, rosterPayloads, "449.l.123.t.4");
 
     expect(imports).toMatchObject({ leagueKey: "449.l.123", season: 2026, currentWeek: 4, ownedTeamKey: "449.l.123.t.4" });
     expect(imports.rosterSlots.map((slot) => slot.slotType)).toEqual(["QB", "FLEX", "BENCH"]);
@@ -126,27 +134,42 @@ describe("Yahoo provider normalization", () => {
     expect(imports.teams).toHaveLength(2);
     expect(imports.teams[0].players[0]).toMatchObject({ playerKey: "449.p.1", fullName: "Starter One", selectedPosition: "QB" });
     expect(imports.teams[1].players[0]).toMatchObject({ playerKey: "449.p.2", selectedPosition: "BN" });
+    expect(imports.matchups).toEqual([expect.objectContaining({
+      week: 4,
+      teamKeys: ["449.l.123.t.4", "449.l.123.t.8"],
+      points: [81.25, 79],
+      projectedPoints: [110.5, 99.25],
+      status: "midevent",
+    })]);
 
     expect(() => normalizeYahooLeagueImport(
       { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Missing season" }, { current_week: "4" }]] } },
       settings,
       teams,
+      scoreboard,
       new Map(),
       "449.l.123.t.4"
     )).toThrow("yahoo_payload_invalid");
-    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "DB" }, { count: 1 }], stat: [{ stat_id: "4" }, { value: 4 }] } }, teams, rosterPayloads, "449.l.123.t.4"))
+    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "DB" }, { count: 1 }], stat: [{ stat_id: "4" }, { value: 4 }] } }, teams, scoreboard, rosterPayloads, "449.l.123.t.4"))
       .toThrow("yahoo_payload_unsupported");
-    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "QB" }, { count: 1 }] } }, teams, rosterPayloads, "449.l.123.t.4"))
+    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "QB" }, { count: 1 }] } }, teams, scoreboard, rosterPayloads, "449.l.123.t.4"))
       .toThrow("yahoo_payload_invalid");
     const missingSelected = new Map(rosterPayloads);
     missingSelected.set("449.l.123.t.4", { fantasy_content: { players: { 0: { player: [[{ player_key: "449.p.1" }, { name: { full: "Starter One" } }, { display_position: "QB" }]] } } } });
-    expect(() => normalizeYahooLeagueImport(metadata, settings, teams, missingSelected, "449.l.123.t.4"))
+    expect(() => normalizeYahooLeagueImport(metadata, settings, teams, scoreboard, missingSelected, "449.l.123.t.4"))
       .toThrow("yahoo_payload_unsupported");
+    expect(() => normalizeYahooMatchups({ fantasy_content: { matchups: {} } }, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
+      .toThrow("yahoo_matchups_invalid");
+    const foreignTeam = JSON.parse(JSON.stringify(scoreboard));
+    foreignTeam.fantasy_content.league[0].scoreboard[0].matchups[0].matchup[3].teams[1].team[0][0].team_key = "449.l.123.t.99";
+    expect(() => normalizeYahooMatchups(foreignTeam, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
+      .toThrow("yahoo_matchups_invalid");
   });
 });
 
 describe("Yahoo migration security contract", () => {
   const migration = readFileSync(new URL("../supabase/migrations/0003_yahoo_integration.sql", import.meta.url), "utf8");
+  const matchupMigration = readFileSync(new URL("../supabase/migrations/0004_yahoo_weekly_matchups.sql", import.meta.url), "utf8");
 
   it("stores ciphertext server-side and exposes no authenticated token policy", () => {
     expect(migration).toMatch(/access_token_ciphertext text not null/);
@@ -160,5 +183,13 @@ describe("Yahoo migration security contract", () => {
     expect(migration).toMatch(/create table if not exists public\.provider_identity_queue/);
     expect(migration).toMatch(/alter table public\.provider_identity_queue enable row level security/);
     expect(migration).not.toMatch(/create policy .*provider_identity_queue/);
+  });
+
+  it("keeps current-week matchups league-scoped and server-written", () => {
+    expect(matchupMigration).toMatch(/foreign key \(team_a_roster_id, league_id\) references public\.rosters\(id, league_id\)/);
+    expect(matchupMigration).toMatch(/foreign key \(team_b_roster_id, league_id\) references public\.rosters\(id, league_id\)/);
+    expect(matchupMigration).toMatch(/alter table public\.league_week_matchups enable row level security/);
+    expect(matchupMigration).toMatch(/for select to authenticated using \(public\.can_access_league\(league_id\)\)/);
+    expect(matchupMigration).not.toMatch(/for (insert|update|delete|all) to authenticated/);
   });
 });

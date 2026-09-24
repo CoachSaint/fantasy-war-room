@@ -111,6 +111,7 @@ export async function POST(request: Request) {
           leagues_processed: summary.leaguesProcessed,
           rosters_processed: summary.rostersProcessed,
           players_processed: summary.playersProcessed,
+          matchups_processed: summary.matchupsProcessed,
           finished_at: finishedAt,
         }).eq("id", runId).eq("user_id", auth.user.id);
       if (runUpdate.error) return errorResponse("yahoo_sync_persistence_failed", 503);

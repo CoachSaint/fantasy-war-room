@@ -45,6 +45,18 @@ export interface YahooLeagueImport {
   rosterSlots: YahooRosterSlot[];
   scoringModifiers: Record<string, number>;
   teams: YahooTeamRoster[];
+  matchups: YahooMatchup[];
+}
+
+export interface YahooMatchup {
+  week: number;
+  teamKeys: [string, string];
+  points: [number | null, number | null];
+  projectedPoints: [number | null, number | null];
+  status: string;
+  winnerTeamKey: string | null;
+  isTied: boolean;
+  isPlayoffs: boolean;
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -178,6 +190,41 @@ function normalizeTeam(node: unknown): YahooTeamRoster | null {
   };
 }
 
+export function normalizeYahooMatchups(payload: unknown, leagueKey: string, week: number, teamKeys: string[]): YahooMatchup[] {
+  const nodes = findNamedNodes(payload, "matchup");
+  if (!nodes.length || nodes.length > MAX_TEAMS_PER_LEAGUE / 2) throw new Error("yahoo_matchups_invalid");
+  if (teamKeys.some((key) => !key.startsWith(`${leagueKey}.t.`))) throw new Error("yahoo_matchups_invalid");
+  const knownTeams = new Set(teamKeys);
+  const seenTeams = new Set<string>();
+  return nodes.map((node) => {
+    const matchupWeek = number(node, "week");
+    const teamNodes = findNamedNodes(node, "team");
+    if (matchupWeek !== week || teamNodes.length !== 2) throw new Error("yahoo_matchups_invalid");
+    const parsed = teamNodes.map((team) => ({
+      key: text(team, "team_key"),
+      points: number(findNamedNodes(team, "team_points")[0], "total") ?? null,
+      projected: number(findNamedNodes(team, "team_projected_points")[0], "total") ?? null,
+    })).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    if (parsed.some((team) => !team.key || !knownTeams.has(team.key) || seenTeams.has(team.key))) {
+      throw new Error("yahoo_matchups_invalid");
+    }
+    const winnerTeamKey = text(node, "winner_team_key") ?? null;
+    if (winnerTeamKey && !parsed.some((team) => team.key === winnerTeamKey)) throw new Error("yahoo_matchups_invalid");
+    if (winnerTeamKey && truthy(node, "is_tied")) throw new Error("yahoo_matchups_invalid");
+    parsed.forEach((team) => seenTeams.add(team.key!));
+    return {
+      week,
+      teamKeys: [parsed[0].key!, parsed[1].key!] as [string, string],
+      points: [parsed[0].points, parsed[1].points] as [number | null, number | null],
+      projectedPoints: [parsed[0].projected, parsed[1].projected] as [number | null, number | null],
+      status: text(node, "status") ?? "unknown",
+      winnerTeamKey,
+      isTied: truthy(node, "is_tied"),
+      isPlayoffs: truthy(node, "is_playoffs"),
+    };
+  });
+}
+
 export function normalizeYahooOwnedTeams(payload: unknown): YahooTeamRoster[] {
   const byKey = new Map<string, YahooTeamRoster>();
   for (const node of findNamedNodes(payload, "team")) {
@@ -191,6 +238,7 @@ export function normalizeYahooLeagueImport(
   metadataPayload: unknown,
   settingsPayload: unknown,
   teamsPayload: unknown,
+  scoreboardPayload: unknown,
   rosterPayloads: Map<string, unknown>,
   ownedTeamKey: string
 ): YahooLeagueImport {
@@ -246,6 +294,7 @@ export function normalizeYahooLeagueImport(
     rosterSlots,
     scoringModifiers,
     teams: teams.slice(0, MAX_TEAMS_PER_LEAGUE),
+    matchups: normalizeYahooMatchups(scoreboardPayload, leagueKey, currentWeek!, teamKeys),
   };
 }
 
@@ -302,6 +351,7 @@ export async function getYahooLeagueImports(accessToken: string): Promise<YahooL
     ]);
     const leagueNode = findNamedNodes(metadata, "league")[0] ?? metadata;
     const week = Math.max(1, Math.min(23, number(leagueNode, "current_week") || 1));
+    const scoreboardPayload = await yahooFetch(accessToken, `/league/${encodeURIComponent(leagueKey)}/scoreboard;week=${week}`);
     const teamKeys = findNamedNodes(teamsPayload, "team")
       .map((node) => text(node, "team_key"))
       .filter((key): key is string => Boolean(key))
@@ -317,6 +367,7 @@ export async function getYahooLeagueImports(accessToken: string): Promise<YahooL
       metadata,
       settings,
       teamsPayload,
+      scoreboardPayload,
       new Map(rosterResults.map((entry) => [entry.teamKey, entry.payload])),
       ownedTeam.teamKey
     );
