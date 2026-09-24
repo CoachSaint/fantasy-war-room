@@ -52,6 +52,10 @@ if [ -z "$TESTS_LINE" ]; then
   echo "REFUSING: could not find a vitest 'Tests' summary line in the test output — a missing summary is not a pass" >&2
   exit 1
 fi
+if [ -z "$TEST_FILES_LINE" ]; then
+  echo "REFUSING: could not find a vitest 'Test Files' summary line in the test output" >&2
+  exit 1
+fi
 
 echo "observed summary lines:"
 echo "  ${TEST_FILES_LINE}"
@@ -81,6 +85,11 @@ fi
 
 if [ "$SKIPPED" -gt 0 ]; then
   echo "REFUSING: vitest reported ${SKIPPED} skipped test(s) — a skip is not a pass" >&2
+  exit 1
+fi
+
+if [ "$PASSED" -ne "$TOTAL" ]; then
+  echo "REFUSING: vitest reported ${PASSED}/${TOTAL} passed test(s) — every test must pass" >&2
   exit 1
 fi
 

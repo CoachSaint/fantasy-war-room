@@ -66,10 +66,17 @@ export function YahooConnectionCard() {
   }, []);
 
   useEffect(() => {
+    const url = new URL(window.location.href);
+    const callbackStatus = url.searchParams.get("yahoo");
+    if (callbackStatus) {
+      url.searchParams.delete("yahoo");
+      window.history.replaceState(window.history.state, "", url);
+    }
     void loadStatus().then(() => {
-      const callbackStatus = new URLSearchParams(window.location.search).get("yahoo");
       if (callbackStatus && Object.hasOwn(callbackMessages, callbackStatus)) {
-        setState((previous) => ({ ...previous, message: callbackMessages[callbackStatus] }));
+        setState((previous) => callbackStatus === "connected" && !previous.connected
+          ? previous
+          : { ...previous, message: callbackMessages[callbackStatus] });
       }
     });
   }, [loadStatus]);
