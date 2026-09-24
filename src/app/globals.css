@@ -53,6 +53,7 @@ button, input { font: inherit; }
 }
 
 .shell { width: min(1180px, calc(100% - 32px)); margin: 0 auto; padding: 28px 0 112px; }
+.site-attribution { padding: 0 16px 112px; color: var(--muted); font-size: 12px; line-height: 1.5; text-align: center; }
 .glass {
   background: var(--surface);
   border: 1px solid var(--line);
