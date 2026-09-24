@@ -195,8 +195,9 @@ export function normalizeYahooMatchups(payload: unknown, leagueKey: string, week
   if (!nodes.length || nodes.length > MAX_TEAMS_PER_LEAGUE / 2) throw new Error("yahoo_matchups_invalid");
   if (teamKeys.some((key) => !key.startsWith(`${leagueKey}.t.`))) throw new Error("yahoo_matchups_invalid");
   const knownTeams = new Set(teamKeys);
+  if (knownTeams.size !== teamKeys.length) throw new Error("yahoo_matchups_invalid");
   const seenTeams = new Set<string>();
-  return nodes.map((node) => {
+  const matchups = nodes.map((node) => {
     const matchupWeek = number(node, "week");
     const teamNodes = findNamedNodes(node, "team");
     if (matchupWeek !== week || teamNodes.length !== 2) throw new Error("yahoo_matchups_invalid");
@@ -205,7 +206,7 @@ export function normalizeYahooMatchups(payload: unknown, leagueKey: string, week
       points: number(findNamedNodes(team, "team_points")[0], "total") ?? null,
       projected: number(findNamedNodes(team, "team_projected_points")[0], "total") ?? null,
     })).sort((a, b) => String(a.key).localeCompare(String(b.key)));
-    if (parsed.some((team) => !team.key || !knownTeams.has(team.key) || seenTeams.has(team.key))) {
+    if (parsed[0].key === parsed[1].key || parsed.some((team) => !team.key || !knownTeams.has(team.key) || seenTeams.has(team.key))) {
       throw new Error("yahoo_matchups_invalid");
     }
     const winnerTeamKey = text(node, "winner_team_key") ?? null;
@@ -223,6 +224,8 @@ export function normalizeYahooMatchups(payload: unknown, leagueKey: string, week
       isPlayoffs: truthy(node, "is_playoffs"),
     };
   });
+  if (seenTeams.size !== knownTeams.size) throw new Error("yahoo_matchups_invalid");
+  return matchups;
 }
 
 export function normalizeYahooOwnedTeams(payload: unknown): YahooTeamRoster[] {

@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
+import type { YahooLeagueImport } from "../src/lib/data/yahoo";
+import { persistYahooImports } from "../src/lib/integrations/yahoo-sync";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildYahooAuthorizationUrl,
   createYahooOAuthState,
@@ -164,6 +167,25 @@ describe("Yahoo provider normalization", () => {
     foreignTeam.fantasy_content.league[0].scoreboard[0].matchups[0].matchup[3].teams[1].team[0][0].team_key = "449.l.123.t.99";
     expect(() => normalizeYahooMatchups(foreignTeam, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
       .toThrow("yahoo_matchups_invalid");
+    expect(() => normalizeYahooMatchups(scoreboard, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8", "449.l.123.t.9", "449.l.123.t.10"]))
+      .toThrow("yahoo_matchups_invalid");
+    const duplicateTeam = JSON.parse(JSON.stringify(scoreboard));
+    duplicateTeam.fantasy_content.league[0].scoreboard[0].matchups[0].matchup[3].teams[1].team[0][0].team_key = "449.l.123.t.4";
+    expect(() => normalizeYahooMatchups(duplicateTeam, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
+      .toThrow("yahoo_matchups_invalid");
+  });
+
+  it("rejects a partial scoreboard before any existing rows can be changed", async () => {
+    let databaseCalls = 0;
+    const client = { from: () => { databaseCalls++; throw new Error("database should not be reached"); } } as unknown as SupabaseClient;
+    const partial = {
+      currentWeek: 4,
+      teams: ["t.1", "t.2", "t.3", "t.4"].map((teamKey) => ({ teamKey })),
+      matchups: [{ week: 4, teamKeys: ["t.1", "t.2"] }],
+    } as YahooLeagueImport;
+    await expect(persistYahooImports(client, "user", "connection", null, [partial]))
+      .rejects.toMatchObject({ code: "yahoo_matchups_invalid" });
+    expect(databaseCalls).toBe(0);
   });
 });
 

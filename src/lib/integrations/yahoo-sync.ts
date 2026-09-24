@@ -272,6 +272,17 @@ export async function persistYahooImports(
   externalUserId: string | null,
   imports: YahooLeagueImport[]
 ): Promise<YahooSyncSummary> {
+  // Validate every league before the first database write. A partial provider
+  // scoreboard must never replace or delete an existing weekly snapshot.
+  for (const imported of imports) {
+    const expected = new Set(imported.teams.map((team) => team.teamKey));
+    const actual = imported.matchups.flatMap((matchup) => matchup.teamKeys);
+    if (expected.size !== imported.teams.length || actual.length !== expected.size ||
+        new Set(actual).size !== expected.size || actual.some((key) => !expected.has(key)) ||
+        imported.matchups.some((matchup) => matchup.week !== imported.currentWeek)) {
+      throw new YahooSyncError("yahoo_matchups_invalid");
+    }
+  }
   const results = [];
   for (const imported of imports) {
     results.push(await persistYahooLeague(client, userId, connectionId, externalUserId, imported));

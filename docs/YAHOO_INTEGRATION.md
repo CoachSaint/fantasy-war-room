@@ -39,7 +39,7 @@ Yahoo synchronization is currently a checked multi-statement import, not a singl
 
 ### Matchup boundary
 
-Migration `0004_yahoo_weekly_matchups.sql` adds league-scoped current-week matchup storage and a read policy for authenticated league members. It has passed a disposable owner/outsider/anonymous RLS probe on the dedicated project. No live Yahoo scoreboard or Mason roster has been imported yet, so provider parsing and end-to-end counts remain unproven. Leagues without a valid two-team current-week scoreboard currently fail the sync explicitly; historical and future schedule import remain out of scope.
+Migration `0004_yahoo_weekly_matchups.sql` adds league-scoped current-week matchup storage and a read policy for authenticated league members. It has passed a disposable owner/outsider/anonymous RLS probe on the dedicated project. No live Yahoo scoreboard or Mason roster has been imported yet, so provider parsing and end-to-end counts remain unproven. Every imported team must appear exactly once in a two-team current-week matchup; a partial scoreboard fails before database writes. Byes, non-head-to-head leagues, and absent scoreboards therefore fail explicitly; historical and future schedule import remain out of scope.
 
 ## Verification gate after approval
 
