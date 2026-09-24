@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated: 2026-09-23
+Updated: 2026-09-24
 
 ## Decision
 
@@ -17,7 +17,7 @@ Updated: 2026-09-23
 - Authenticated league setup persistence path and membership-aware recommendation/Coach reads.
 - Constant-time cron bearer authorization, bounded request validation, Coach rate limiting, and explicit provider/database degradation responses.
 - Initial schema plus workspace/membership/learning migration with RLS definitions.
-- Credential-gated Yahoo OAuth, encrypted token persistence, normalized league/roster import, and setup UI are queued pending Yahoo approval and live credentials.
+- Credential-gated Yahoo OAuth, encrypted token persistence, normalized league/roster import, and setup UI are implemented. They have not been proven with a live authenticated import.
 
 ## Configuration or owner action still required
 
@@ -28,7 +28,8 @@ Updated: 2026-09-23
 | League identity | Setup contract and persistence route exist | Authenticated real league setup, membership/roster mapping, persisted result |
 | Setup atomicity | Every write and compensating cleanup result is checked | Transactional RPC or equivalent plus injected-failure proof before self-service production use |
 | Sleeper | Public adapter exists; no account/league is configured here | Real league selection, current NFL state, roster/player ID verification |
-| Yahoo | Developer account has Fantasy Sports permission; read-only OAuth/import code remains inert without credentials | Create a new Yahoo app with Fantasy Sports: Read, submit its Client ID for confirmation, register exact callback, verify migration 0003, configure server-only values, consent, and verify live import |
+| Yahoo | Production Vercel has server-side OAuth variable names set, but the current deployment still reports `awaiting_credentials`; a new deployment, Yahoo confirmation, and live consent/import have not been proven | Confirm the new Yahoo app's Fantasy Sports: Read permission and Client ID approval; verify migration 0003 and exact callback; redeploy only after the app-specific database is bound; then prove consent and live import |
+| Yahoo matchups | League settings, teams, and rosters are imported; weekly matchups are not fetched or persisted and the schema has no matchup relation | Approve a league-week matchup schema and RLS/retry contract, then implement and verify matchup import against a bound test database |
 | nflverse | Release assets and bounded parser exist; some seasons/assets may be unavailable | Current season/week asset availability, timestamps, sample data validation |
 | Materialization | Scout honestly marks sync, normalization, scoring, diff, and recommendation materialization as skipped until configured | Real provider-to-canonical-player sync, snapshot/evidence persistence, recommendations, and repeatable run |
 | Coach | Evidence-constrained OpenRouter path exists; demo path is explicit | `OPENROUTER_API_KEY`, provider/model policy, cost/rate checks, evidence-grounded live response |

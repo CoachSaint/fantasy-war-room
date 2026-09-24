@@ -37,6 +37,10 @@ The sync path is read-only with respect to Yahoo. It never submits lineup, waive
 
 Yahoo synchronization is currently a checked multi-statement import, not a single database transaction. Replacement rows are written before stale-row cleanup so failed retries preserve the previous snapshot, but keep the full-production gate closed until injected live-database failures prove retry behavior or the import is moved behind a transactional database boundary.
 
+### Matchup boundary
+
+The importer does not fetch or persist Yahoo weekly matchups. The current schema has no league-week matchup relation, and `leagues.scoring` contains scoring rules rather than schedule data. Matchup import needs an explicit schema, access policy, and retry/update contract before it can be added safely. A successful roster sync must not be represented as a matchup import.
+
 ## Verification gate after approval
 
 - Wrong or missing OAuth state fails without token exchange.
