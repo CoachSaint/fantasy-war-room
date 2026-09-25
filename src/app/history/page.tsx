@@ -10,6 +10,8 @@ type Decision = {
   confidence: number;
   recommended_at: string;
   response: "accepted" | "ignored" | "overridden" | null;
+  user_note: string | null;
+  responded_at: string | null;
   recommendation_snapshot: { kind?: string; headline?: string; engineVersion?: string;
     projectedPoints?: { recommended?: number; current?: number }; confidenceMeaning?: string };
 };
@@ -54,7 +56,67 @@ function ConnectedHistory({ leagueId }: { leagueId: string }) {
         <p className="muted" style={{ margin: 0, fontSize: 13 }}>
           {decision.confidence}% source coverage confidence · {decision.response ? `Marked ${decision.response}` : "No response recorded"}
         </p>
+        <DecisionResponseForm decision={decision} leagueId={leagueId} onSaved={(saved) =>
+          setState((previous) => ({ ...previous, data: previous.data.map((item) =>
+            item.id === saved.id ? { ...item, ...saved } : item) }))} />
       </article>)}
     </section>}
   </>;
+}
+
+function DecisionResponseForm({ decision, leagueId, onSaved }: {
+  decision: Decision;
+  leagueId: string;
+  onSaved: (saved: Pick<Decision, "id" | "response" | "user_note" | "responded_at">) => void;
+}) {
+  const [response, setResponse] = useState<Decision["response"]>(decision.response);
+  const [note, setNote] = useState(decision.user_note || "");
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState("");
+  const [saveError, setSaveError] = useState(false);
+
+  async function save(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    setBusy(true);
+    setMessage("");
+    setSaveError(false);
+    try {
+      const result = await fetch("/api/history", { method: "PATCH", credentials: "same-origin",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ leagueId, decisionId: decision.id, response,
+          note: response ? note.trim() || null : null }) });
+      const body = await result.json() as { data?: Pick<Decision, "id" | "response" | "user_note" | "responded_at"> };
+      if (!result.ok || body.data?.id !== decision.id) throw new Error("save_failed");
+      onSaved(body.data);
+      if (!response) setNote("");
+      setMessage(response ? "Your response was saved." : "Your response was cleared.");
+    } catch {
+      setSaveError(true);
+      setMessage("Your response could not be saved. Please try again.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <form onSubmit={save} style={{ display: "grid", gap: 9, marginTop: 16 }}>
+    <label htmlFor={`decision-response-${decision.id}`} className="muted" style={{ fontSize: 13 }}>What did you decide?</label>
+    <select id={`decision-response-${decision.id}`} value={response || ""}
+      onChange={(event) => setResponse(event.target.value as Decision["response"] || null)}
+      style={{ minHeight: 40, borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface-strong)", color: "var(--text)", padding: "0 10px" }}>
+      <option value="">No response recorded</option>
+      <option value="accepted">I followed this advice</option>
+      <option value="ignored">I did not follow this advice</option>
+      <option value="overridden">I chose a different move</option>
+    </select>
+    <label htmlFor={`decision-note-${decision.id}`} className="muted" style={{ fontSize: 13 }}>Optional note</label>
+    <textarea id={`decision-note-${decision.id}`} value={response ? note : ""}
+      onChange={(event) => setNote(event.target.value)} disabled={!response} maxLength={500} rows={2}
+      style={{ borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface-strong)", color: "var(--text)", padding: 10 }} />
+    <button type="submit" disabled={busy} style={{ justifySelf: "start", minHeight: 40, borderRadius: 999, border: 0,
+      background: "var(--text)", color: "var(--bg)", fontWeight: 700, padding: "0 16px" }}>
+      {busy ? "Saving…" : "Save response"}
+    </button>
+    {message && <p role={saveError ? "alert" : "status"} style={{ margin: 0, fontSize: 12 }}>{message}</p>}
+  </form>;
 }

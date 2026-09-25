@@ -9,7 +9,7 @@ import { reconcileYahooOutcomesForLeague } from "../src/lib/services/yahoo-outco
 import { runYahooSync } from "../src/lib/integrations/yahoo-runner";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
-import { GET as getHistory } from "../src/app/api/history/route";
+import { GET as getHistory, PATCH as saveHistoryResponse } from "../src/app/api/history/route";
 import { GET as getAccuracy } from "../src/app/api/accuracy/route";
 import { GET as getPlayers } from "../src/app/api/players/route";
 import { POST as askCoach } from "../src/app/api/coach/chat/route";
@@ -197,7 +197,7 @@ describe("Yahoo lineup hosted database integration", () => {
           ],
         } });
       const decisionHistory = await client.from("decision_events")
-        .select("id, recommendation_id, recommendation_snapshot, response")
+        .select("id, recommendation_id, recommendation_snapshot, confidence, response")
         .eq("league_id", leagueId).eq("user_id", userId);
       checked("read immutable decision history", decisionHistory.error);
       expect(decisionHistory.data).toHaveLength(4);
@@ -285,6 +285,45 @@ describe("Yahoo lineup hosted database integration", () => {
       ]) });
       expect((await getHistory(new Request(historyUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
       expect((await getHistory(new Request(historyUrl))).status).toBe(401);
+      const responseBody = { leagueId, decisionId: decisionHistory.data![0].id,
+        response: "accepted", note: "I started this player after reviewing the matchup." };
+      const responseRequest = (token?: string, body: unknown = responseBody) => new Request("http://localhost:3000/api/history", {
+        method: "PATCH", headers: { "content-type": "application/json",
+          ...(token ? { authorization: `Bearer ${token}` } : {}) }, body: JSON.stringify(body),
+      });
+      expect((await saveHistoryResponse(responseRequest())).status).toBe(401);
+      expect((await saveHistoryResponse(responseRequest(outsiderToken))).status).toBe(403);
+      expect((await saveHistoryResponse(responseRequest(ownerToken, {
+        ...responseBody, decisionId: randomUUID(),
+      }))).status).toBe(404);
+      const savedResponse = await saveHistoryResponse(responseRequest(ownerToken));
+      expect(savedResponse.status).toBe(200);
+      expect(await savedResponse.json()).toMatchObject({ data: {
+        id: decisionHistory.data![0].id, response: "accepted", user_note: responseBody.note,
+      } });
+      const respondedDecision = await client.from("decision_events")
+        .select("confidence, response, user_note, responded_at")
+        .eq("id", decisionHistory.data![0].id).single();
+      checked("read saved manager response", respondedDecision.error);
+      expect(respondedDecision.data).toMatchObject({ confidence: decisionHistory.data![0].confidence,
+        response: "accepted", user_note: responseBody.note,
+        responded_at: expect.any(String) });
+      const clearedResponse = await saveHistoryResponse(responseRequest(ownerToken, {
+        leagueId, decisionId: decisionHistory.data![0].id, response: null,
+      }));
+      expect(clearedResponse.status).toBe(200);
+      expect(await clearedResponse.json()).toMatchObject({ data: { response: null, user_note: null, responded_at: null } });
+      const directResponseWrite = await fetch(`${url}/rest/v1/decision_events?id=eq.${decisionHistory.data![0].id}`, {
+        method: "PATCH", headers: { apikey: anonKey, authorization: `Bearer ${ownerToken}`,
+          "content-type": "application/json", prefer: "return=representation" },
+        body: JSON.stringify({ response: "accepted" }),
+      });
+      expect(directResponseWrite.status).toBe(200);
+      expect(await directResponseWrite.json()).toEqual([]);
+      const afterDirectWrite = await client.from("decision_events")
+        .select("response, user_note, responded_at").eq("id", decisionHistory.data![0].id).single();
+      checked("read after denied direct response write", afterDirectWrite.error);
+      expect(afterDirectWrite.data).toMatchObject({ response: null, user_note: null, responded_at: null });
       const accuracyUrl = `http://localhost:3000/api/accuracy?leagueId=${leagueId}`;
       const ownerAccuracy = await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerAccuracy.status).toBe(200);
@@ -433,6 +472,18 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("read late unverified forecasts", latePredictions.error);
       expect(latePredictions.data).toHaveLength((beforeLate.data?.length || 0) + 2);
       expect(await reconcileYahooOutcomesForLeague(client, leagueId)).toMatchObject({ pending: 0, recorded: 0 });
+      checked("add second manager to disposable workspace", (await client.from("workspace_members").insert({
+        workspace_id: workspaceId, user_id: outsiderId, role: "member",
+      })).error);
+      checked("add second manager to disposable league", (await client.from("league_memberships").insert({
+        league_id: leagueId, user_id: outsiderId, roster_id: opponentRosterId,
+      })).error);
+      const secondManagerHistory = await getHistory(new Request(historyUrl, {
+        headers: { authorization: `Bearer ${outsiderToken}` },
+      }));
+      expect(secondManagerHistory.status).toBe(200);
+      expect(await secondManagerHistory.json()).toMatchObject({ count: 0, data: [] });
+      expect((await saveHistoryResponse(responseRequest(outsiderToken))).status).toBe(404);
     } finally {
       if (previousCronSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousCronSecret;
