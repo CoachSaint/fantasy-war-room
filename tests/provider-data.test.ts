@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sleeper } from "../src/lib/data/sleeper";
+import { parseSleeperSeasonProjections, parseSleeperWeeklyProjections, sleeper } from "../src/lib/data/sleeper";
+import { scoreYahooOffenseProjection } from "../src/lib/engine/yahoo-projection";
 import {
   nflverse,
   nflverseReleaseAssetUrl,
   parseDepthCharts,
   parseInjuryReport,
   parsePlayerStats,
+  parseLatestAvailablePlayerStats,
+  parseRecentPlayerStats,
+  parseGameStarts,
+  parseYahooCrosswalk,
 } from "../src/lib/data/nflverse";
 
 afterEach(() => {
@@ -13,6 +18,27 @@ afterEach(() => {
 });
 
 describe("provider identity and availability", () => {
+  it("keeps only actual weekly projection fields, not ADP-only filler", () => {
+    const rows = parseSleeperWeeklyProjections({
+      "96": { pts_ppr: 14.09, pts_half_ppr: 14.09, pts_std: 14.09, pass_yd: 218.97, adp_dd_ppr: 161 },
+      "19": { adp_dd_ppr: 1000 },
+      invalid: { pts_ppr: 12 },
+    }, 2026, 3, "2026-09-24T20:00:00.000Z");
+    expect(rows).toEqual([{ sleeperId: "96", season: 2026, week: 3, ppr: 14.09, halfPpr: 14.09, standard: 14.09, stats: { pass_yd: 218.97 }, observedAt: "2026-09-24T20:00:00.000Z" }]);
+  });
+  it("keeps full-season forecasts separate from ADP-only rows and weekly points", () => {
+    const rows = parseSleeperSeasonProjections({
+      "8138": { pts_ppr: 260.8, pts_half_ppr: 245.3, pts_std: 229.8,
+        rush_yd: 1270, rush_td: 11, rec: 31, adp_ppr: 9.2 },
+      "19": { adp_ppr: 1000 },
+      "20": { pts_ppr: 280, adp_ppr: 5 },
+    }, 2026, "2026-09-25T00:00:00.000Z");
+    expect(rows).toEqual([{ sleeperId: "8138", season: 2026, week: 0,
+      ppr: 260.8, halfPpr: 245.3, standard: 229.8,
+      stats: { rush_yd: 1270, rush_td: 11, rec: 31 },
+      observedAt: "2026-09-25T00:00:00.000Z",
+      adpPpr: 9.2, adpHalfPpr: null, adpStandard: null }]);
+  });
   const league = {
     league_id: "league-1",
     name: "Test League",
@@ -63,6 +89,19 @@ describe("provider identity and availability", () => {
 });
 
 describe("nflverse release adapters", () => {
+  it("maps the published Eastern game time to UTC and refuses duplicate teams", () => {
+    const rows = [
+      { season: "2026", week: "3", game_type: "REG", gameday: "2026-09-24", gametime: "20:15", home_team: "GB", away_team: "ATL" },
+      { season: "2026", week: "3", game_type: "REG", gameday: "2026-09-27", gametime: "13:00", home_team: "BUF", away_team: "LAC" },
+    ];
+    expect(parseGameStarts(rows, 2026, 3)).toEqual([
+      { season: 2026, week: 3, team: "GB", kickoffAt: "2026-09-25T00:15:00.000Z" },
+      { season: 2026, week: 3, team: "ATL", kickoffAt: "2026-09-25T00:15:00.000Z" },
+      { season: 2026, week: 3, team: "BUF", kickoffAt: "2026-09-27T17:00:00.000Z" },
+      { season: 2026, week: 3, team: "LAC", kickoffAt: "2026-09-27T17:00:00.000Z" },
+    ]);
+    expect(parseGameStarts([...rows, rows[0]], 2026, 3)).toEqual([]);
+  });
   it("uses release assets rather than the obsolete master tree", () => {
     expect(nflverseReleaseAssetUrl("stats_player", "stats_player_week_2026.csv")).toBe(
       "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.csv"
@@ -88,6 +127,68 @@ describe("nflverse release adapters", () => {
     expect(snapshots[2].floor).toBeUndefined();
   });
 
+  it("retains raw nflverse game stats for exact league scoring without substituting PPR", () => {
+    const [game] = parsePlayerStats([{ player_id: "00-0023459", season: 2026, week: 1,
+      fantasy_points_ppr: 12.54, passing_yards: 221, passing_tds: 1,
+      passing_interceptions: 0, carries: 3, rushing_yards: -3, rushing_tds: 0,
+      receptions: 0, receiving_yards: 0, receiving_tds: 0, fumbles_lost_total: 0,
+    }], 2026, 1);
+    expect(game.actualStats).toMatchObject({ pass_yd: 221, pass_td: 1, pass_int: 0,
+      rush_att: 3, rush_yd: -3, rush_td: 0, rec: 0 });
+    expect(scoreYahooOffenseProjection({ stats: game.actualStats! }, {
+      "4": 0.04, "5": 4, "6": -1, "9": 0.1, "10": 6, "11": 1,
+      "12": 0.1, "13": 6, "18": -2,
+    })).toMatchObject({ ok: true, points: 12.54, assumedZeroStatIds: [] });
+    expect(scoreYahooOffenseProjection({ stats: game.actualStats! }, { "16": 2 }))
+      .toMatchObject({ ok: true, assumedZeroStatIds: ["16"] });
+  });
+
+  it("uses the newest published historical stats week without calling actuals projections", () => {
+    const selected = parseLatestAvailablePlayerStats([
+      { player_id: "p1", player_name: "Player One", season: 2026, week: 1, fantasy_points_ppr: 11 },
+      { player_id: "p1", player_name: "Player One", season: 2026, week: 2, fantasy_points_ppr: 17 },
+      { player_id: "p1", player_name: "Player One", season: 2026, week: 4, fantasy_points_ppr: 22 },
+    ], 2026, 3);
+    expect(selected.week).toBe(2);
+    expect(selected.snapshots).toHaveLength(1);
+    expect(selected.snapshots[0].actualPoints).toBe(17);
+    expect(selected.snapshots[0].projectedPoints).toBeUndefined();
+  });
+
+  it("keeps three observed weeks even when the latest week is partial", () => {
+    const selected = parseRecentPlayerStats([
+      { player_id: "a", player_name: "A", season: 2026, week: 1, fantasy_points_ppr: 8 },
+      { player_id: "a", player_name: "A", season: 2026, week: 2, fantasy_points_ppr: 12 },
+      { player_id: "b", player_name: "B", season: 2026, week: 2, fantasy_points_ppr: 20 },
+      { player_id: "a", player_name: "A", season: 2026, week: 3, fantasy_points_ppr: 3 },
+      { player_id: "a", player_name: "A", season: 2026, week: 4, fantasy_points_ppr: 100 },
+    ], 2026, 3);
+    expect(selected.weeks).toEqual([1, 2, 3]);
+    expect(selected.week).toBe(3);
+    expect(selected.snapshots.map((item) => `${item.playerId}:${item.week}:${item.actualPoints}`))
+      .toEqual(["a:1:8", "a:2:12", "b:2:20", "a:3:3"]);
+    expect(selected.snapshots.every((item) => item.projectedPoints === undefined)).toBe(true);
+  });
+
+  it("joins Yahoo and GSIS IDs only from an unambiguous current roster week", () => {
+    const crosswalk = parseYahooCrosswalk([
+      { season: 2026, week: 2, game_type: "REG", yahoo_id: "10", gsis_id: "00-0000010" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "10", sleeper_id: "510", gsis_id: "00-0000010", full_name: "Quarterback One", team: "KC", position: "QB", status: "ACT" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "20", gsis_id: "00-0000020" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "20", gsis_id: "00-0000099" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "40", gsis_id: "00-0000040" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "41", gsis_id: "00-0000040" },
+      { season: 2026, week: 3, game_type: "REG", gsis_id: "00-0000050", full_name: "Defender", position: "LB" },
+      { season: 2026, week: 3, game_type: "REG", gsis_id: "00-0000060", full_name: "Name One", position: "RB" },
+      { season: 2026, week: 3, game_type: "REG", gsis_id: "00-0000060", full_name: "Name Two", position: "RB" },
+      { season: 2026, week: 4, game_type: "REG", yahoo_id: "30", gsis_id: "00-0000030" },
+    ], 2026, 3);
+    expect(crosswalk.week).toBe(3);
+    expect([...crosswalk.ids]).toEqual([["10", "00-0000010"]]);
+    expect([...crosswalk.sleeperIds]).toEqual([["510", "00-0000010"]]);
+    expect([...crosswalk.players]).toEqual([["00-0000010", { fullName: "Quarterback One", team: "KC", position: "QB", status: "ACT" }]]);
+  });
+
   it("retains depth order and practice participation in evidence", () => {
     const depth = parseDepthCharts([
       { player_id: "p1", full_name: "Starter", team: "KC", depth_position: "WR", depth_team: 1, season: 2026, week: 2 },
@@ -102,6 +203,14 @@ describe("nflverse release adapters", () => {
     expect(depth[0].fingerprint).toContain("d1");
     expect(injury[0].summary).toContain("Practice participation: Limited");
     expect(injury[0].sourceUrl).toContain("releases/download/injuries/");
+  });
+
+  it("keeps injuries for supported fantasy positions only", () => {
+    const rows = parseInjuryReport([
+      { gsis_id: "00-0000001", position: "WR", season: 2026, week: 3 },
+      { gsis_id: "00-0000002", position: "LB", season: 2026, week: 3 },
+    ], 2026, 3);
+    expect(rows.map((row) => row.playerId)).toEqual(["00-0000001"]);
   });
 
   it("normalizes the official dated depth schema and keeps only its latest snapshot", () => {

@@ -1,5 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { YahooLeagueImport, YahooPlayer } from "@/lib/data/yahoo";
+import { randomUUID } from "node:crypto";
+import type { YahooAvailablePool, YahooLeagueImport, YahooPlayer } from "@/lib/data/yahoo";
+import { nflverse } from "@/lib/data/nflverse";
 
 export class YahooSyncError extends Error {
   constructor(public readonly code: string) {
@@ -12,6 +14,9 @@ export interface YahooSyncSummary {
   leaguesProcessed: number;
   rostersProcessed: number;
   playersProcessed: number;
+  matchupsProcessed: number;
+  draftPicksProcessed: number;
+  draftHistoryUnavailableLeagues: number;
   leagueIds: string[];
 }
 
@@ -27,24 +32,91 @@ function designation(selectedPosition: string | undefined): "starter" | "bench" 
   return "starter";
 }
 
-async function resolveYahooPlayers(
+export async function resolveYahooPlayers(
   client: SupabaseClient,
-  players: YahooPlayer[]
+  players: YahooPlayer[],
+  season: number,
+  week: number,
 ): Promise<Map<string, string>> {
   const uniquePlayers = [...new Map(players.map((player) => [player.playerKey, player])).values()];
   if (!uniquePlayers.length) return new Map();
-  const providerIds = uniquePlayers.map((player) => player.playerKey);
-  const existing = await client
-    .from("player_id_map")
-    .select("provider_player_id, player_id")
-    .eq("provider", "yahoo")
-    .in("provider_player_id", providerIds);
-  if (existing.error) throw new YahooSyncError("yahoo_player_mapping_unavailable");
-  const resolved = new Map<string, string>((existing.data || []).map((row) => [String(row.provider_player_id), String(row.player_id)]));
+  const chunks = <T>(items: T[]) => Array.from({ length: Math.ceil(items.length / 100) }, (_, i) => items.slice(i * 100, (i + 1) * 100));
+  const resolved = new Map<string, string>();
+  for (const batch of chunks(uniquePlayers)) {
+    const existing = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "yahoo")
+      .in("provider_player_id", batch.map((player) => player.playerKey));
+    if (existing.error) throw new YahooSyncError("yahoo_player_mapping_unavailable");
+    for (const row of existing.data || []) resolved.set(String(row.provider_player_id), String(row.player_id));
+  }
+
+  // The weekly roster release carries exact Yahoo and GSIS IDs. Reuse the
+  // GSIS-backed canonical row before creating a Yahoo-only identity. Missing or
+  // ambiguous crosswalk rows stay in the manual identity queue below.
+  const crosswalk = await nflverse.getYahooCrosswalk({ season, week });
+  const linked = uniquePlayers.filter((player) => {
+    const yahooId = /^\d+\.p\.(\d+)$/.exec(player.playerKey)?.[1];
+    return !resolved.has(player.playerKey) && yahooId && crosswalk.ids.has(yahooId);
+  }).map((player) => ({ player, gsisId: crosswalk.ids.get(/^\d+\.p\.(\d+)$/.exec(player.playerKey)![1])! }));
+  const nflverseMap = new Map<string, string>();
+  for (const batch of chunks([...new Set(linked.map((entry) => entry.gsisId))])) {
+    const existing = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (existing.error) throw new YahooSyncError("yahoo_crosswalk_mapping_unavailable");
+    for (const row of existing.data || []) nflverseMap.set(String(row.provider_player_id), String(row.player_id));
+  }
+  const unlinked = [...new Map(linked.filter((entry) => !nflverseMap.has(entry.gsisId))
+    .map((entry) => [entry.gsisId, entry])).values()];
+  for (const batch of chunks(unlinked)) {
+    const canonical = await client.from("players").upsert(batch.map(({ player, gsisId }) => ({
+      canonical_key: `nflverse:${gsisId}`,
+      full_name: player.fullName,
+      team: player.team || null,
+      position: player.position,
+      status: player.status || null,
+      identity_status: "provider_only",
+    })), { onConflict: "canonical_key" }).select("id, canonical_key");
+    if (canonical.error) throw new YahooSyncError("yahoo_crosswalk_player_create_failed");
+    const byKey = new Map((canonical.data || []).map((row) => [String(row.canonical_key), String(row.id)]));
+    const mappings = batch.map(({ gsisId }) => ({
+      provider: "nflverse",
+      provider_player_id: gsisId,
+      player_id: byKey.get(`nflverse:${gsisId}`),
+    }));
+    if (mappings.some((row) => !row.player_id)) throw new YahooSyncError("yahoo_crosswalk_player_create_failed");
+    const written = await client.from("player_id_map").upsert(mappings, { onConflict: "provider,provider_player_id", ignoreDuplicates: true });
+    if (written.error) throw new YahooSyncError("yahoo_crosswalk_mapping_failed");
+  }
+  for (const batch of chunks([...new Set(linked.map((entry) => entry.gsisId))])) {
+    const current = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (current.error) throw new YahooSyncError("yahoo_crosswalk_mapping_unavailable");
+    for (const row of current.data || []) nflverseMap.set(String(row.provider_player_id), String(row.player_id));
+  }
+  if (linked.some(({ gsisId }) => !nflverseMap.has(gsisId))) throw new YahooSyncError("yahoo_crosswalk_mapping_incomplete");
+  for (const batch of chunks(linked)) {
+    const mappings = await client.from("player_id_map").upsert(batch.map(({ player, gsisId }) => ({
+      provider: "yahoo",
+      provider_player_id: player.playerKey,
+      player_id: nflverseMap.get(gsisId),
+    })), { onConflict: "provider,provider_player_id", ignoreDuplicates: true });
+    if (mappings.error) throw new YahooSyncError("yahoo_player_mapping_failed");
+    const current = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "yahoo")
+      .in("provider_player_id", batch.map(({ player }) => player.playerKey));
+    if (current.error) throw new YahooSyncError("yahoo_player_mapping_unavailable");
+    for (const row of current.data || []) resolved.set(String(row.provider_player_id), String(row.player_id));
+  }
 
   const missing = uniquePlayers.filter((player) => !resolved.has(player.playerKey));
-  if (missing.length) {
-    const canonical = await client.from("players").upsert(missing.map((player) => ({
+  for (const batch of chunks(missing)) {
+    const canonical = await client.from("players").upsert(batch.map((player) => ({
       canonical_key: `yahoo:${player.playerKey}`,
       full_name: player.fullName,
       team: player.team || null,
@@ -55,7 +127,7 @@ async function resolveYahooPlayers(
     })), { onConflict: "canonical_key" }).select("id, canonical_key");
     if (canonical.error) throw new YahooSyncError("yahoo_player_materialization_failed");
     const playerIdByCanonicalKey = new Map((canonical.data || []).map((row) => [String(row.canonical_key), String(row.id)]));
-    const mappingRows = missing.map((player) => ({
+    const mappingRows = batch.map((player) => ({
       provider: "yahoo",
       provider_player_id: player.playerKey,
       player_id: playerIdByCanonicalKey.get(`yahoo:${player.playerKey}`),
@@ -63,7 +135,7 @@ async function resolveYahooPlayers(
     if (mappingRows.some((row) => !row.player_id)) throw new YahooSyncError("yahoo_player_materialization_failed");
     const mappings = await client.from("player_id_map").upsert(mappingRows, { onConflict: "provider,provider_player_id" });
     if (mappings.error) throw new YahooSyncError("yahoo_player_mapping_failed");
-    const queueRows = missing.map((player) => ({
+    const queueRows = batch.map((player) => ({
       provider: "yahoo",
       provider_player_id: player.playerKey,
       player_id: playerIdByCanonicalKey.get(`yahoo:${player.playerKey}`),
@@ -81,22 +153,84 @@ async function resolveYahooPlayers(
   return resolved;
 }
 
+/** Replace the bounded Yahoo-verified candidate pool only after a complete fetch. */
+export async function persistYahooAvailablePool(
+  client: SupabaseClient,
+  leagueId: string,
+  league: YahooLeagueImport,
+  pool: YahooAvailablePool,
+): Promise<number> {
+  if (pool.leagueKey !== league.leagueKey || pool.players.length > 200
+    || new Set(pool.players.map((player) => player.playerKey)).size !== pool.players.length) {
+    throw new YahooSyncError("yahoo_available_pool_invalid");
+  }
+  const observedAt = new Date(pool.observedAt);
+  if (!Number.isFinite(observedAt.getTime())) throw new YahooSyncError("yahoo_available_pool_invalid");
+  const ids = await resolveYahooPlayers(client, pool.players, league.season, league.currentWeek);
+  if (ids.size !== pool.players.length) throw new YahooSyncError("yahoo_available_identity_incomplete");
+  const freshUntil = new Date(observedAt.getTime() + 6 * 60 * 60_000).toISOString();
+  const scanId = randomUUID();
+  for (let offset = 0; offset < pool.players.length; offset += 100) {
+    const batch = pool.players.slice(offset, offset + 100);
+    const rows = batch.map((player, index) => ({
+      league_id: leagueId, scan_id: scanId, player_id: ids.get(player.playerKey), provider_player_key: player.playerKey,
+      provider_order: offset + index + 1,
+      provider_status: player.status || null,
+      observed_at: pool.observedAt, fresh_until: freshUntil,
+    }));
+    if (rows.some((row) => !row.player_id)) throw new YahooSyncError("yahoo_available_identity_incomplete");
+    const written = await client.from("league_available_players")
+      .upsert(rows, { onConflict: "league_id,scan_id,player_id" });
+    if (written.error) throw new YahooSyncError(written.error.code === "42P01" ? "yahoo_availability_migration_required" : "yahoo_available_pool_write_failed");
+  }
+  const scan = await client.from("league_available_scans").upsert({
+    league_id: leagueId, scan_id: scanId, observed_at: pool.observedAt, fresh_until: freshUntil,
+    candidates_count: pool.players.length, truncated: pool.truncated,
+    source_url: `https://fantasysports.yahooapis.com/fantasy/v2/league/${pool.leagueKey}/players;status=A;sort=OR`,
+  }, { onConflict: "league_id" });
+  if (scan.error) throw new YahooSyncError(scan.error.code === "42P01" ? "yahoo_availability_migration_required" : "yahoo_available_scan_write_failed");
+  const cleanup = await client.from("league_available_players").delete()
+    .eq("league_id", leagueId).neq("scan_id", scanId);
+  if (cleanup.error) throw new YahooSyncError("yahoo_available_pool_cleanup_failed");
+  return pool.players.length;
+}
+
 async function persistYahooLeague(
   client: SupabaseClient,
   userId: string,
   connectionId: string,
   externalUserId: string | null,
   imported: YahooLeagueImport
-): Promise<{ leagueId: string; rosterId: string; rosterCount: number; playerCount: number }> {
+): Promise<{ leagueId: string; rosterId: string; rosterCount: number; playerCount: number; matchupCount: number;
+  draftPickCount: number; draftHistoryUnavailable: boolean }> {
   const now = new Date().toISOString();
   const existingLeague = await client
     .from("leagues")
     .select("id, workspace_id")
-    .eq("owner_id", userId)
     .eq("provider", "yahoo")
     .eq("provider_league_id", imported.leagueKey)
     .maybeSingle();
   if (existingLeague.error) throw new YahooSyncError("yahoo_league_lookup_failed");
+
+  const priorRosters = existingLeague.data ? await client.from("rosters")
+    .select("provider_roster_id, owner_user_id")
+    .eq("league_id", existingLeague.data.id) : { data: [], error: null };
+  if (priorRosters.error) throw new YahooSyncError("yahoo_roster_ownership_unavailable");
+  const priorOwnerByTeam = new Map((priorRosters.data || [])
+    .map((row) => [String(row.provider_roster_id), row.owner_user_id ? String(row.owner_user_id) : null]));
+  const claimedOwner = priorOwnerByTeam.get(imported.ownedTeamKey);
+  if (claimedOwner && claimedOwner !== userId) throw new YahooSyncError("yahoo_roster_already_claimed");
+  if (existingLeague.data && externalUserId) {
+    const providerOwner = await client.from("league_memberships")
+      .select("user_id")
+      .eq("league_id", existingLeague.data.id)
+      .eq("provider_user_id", externalUserId)
+      .maybeSingle();
+    if (providerOwner.error) throw new YahooSyncError("yahoo_provider_identity_unavailable");
+    if (providerOwner.data && String(providerOwner.data.user_id) !== userId) {
+      throw new YahooSyncError("yahoo_provider_identity_already_claimed");
+    }
+  }
 
   let workspaceId: string;
   let leagueId: string;
@@ -107,10 +241,11 @@ async function persistYahooLeague(
       name: imported.name,
       season: imported.season,
       current_week: imported.currentWeek,
-      scoring: { provider: "yahoo", statModifiers: imported.scoringModifiers },
+      scoring: { provider: "yahoo", statModifiers: imported.scoringModifiers,
+        draftStatus: imported.draftStatus || "unknown", draftHistoryStatus: imported.draftHistoryStatus || "unavailable" },
       roster_positions: imported.rosterSlots.flatMap((slot) => Array.from({ length: slot.count }, () => slot.slotType)),
       updated_at: now,
-    }).eq("id", leagueId).eq("owner_id", userId);
+    }).eq("id", leagueId);
     if (updated.error) throw new YahooSyncError("yahoo_league_update_failed");
   } else {
     const workspace = assertResult(await client.from("workspaces").insert({
@@ -129,15 +264,23 @@ async function persistYahooLeague(
       name: imported.name,
       season: imported.season,
       current_week: imported.currentWeek,
-      scoring: { provider: "yahoo", statModifiers: imported.scoringModifiers },
+      scoring: { provider: "yahoo", statModifiers: imported.scoringModifiers,
+        draftStatus: imported.draftStatus || "unknown", draftHistoryStatus: imported.draftHistoryStatus || "unavailable" },
       roster_positions: imported.rosterSlots.flatMap((slot) => Array.from({ length: slot.count }, () => slot.slotType)),
     }).select("id").single(), "yahoo_league_create_failed");
     if (!league) throw new YahooSyncError("yahoo_league_create_failed");
     leagueId = String(league.id);
   }
 
+  // Yahoo authenticated the importing manager as the owner of one team in
+  // this league. Join that same workspace without downgrading an existing role.
+  const workspaceMembership = await client.from("workspace_members").upsert({
+    workspace_id: workspaceId, user_id: userId, role: existingLeague.data ? "member" : "owner",
+  }, { onConflict: "workspace_id,user_id", ignoreDuplicates: true });
+  if (workspaceMembership.error) throw new YahooSyncError("yahoo_workspace_membership_failed");
+
   const allPlayers = imported.teams.flatMap((team) => team.players);
-  const playerIds = await resolveYahooPlayers(client, allPlayers);
+  const playerIds = await resolveYahooPlayers(client, allPlayers, imported.season, imported.currentWeek);
 
   const expandedSlots = imported.rosterSlots.flatMap((slot, slotIndex) => Array.from({ length: slot.count }, (_, offset) => ({
     league_id: leagueId,
@@ -154,10 +297,11 @@ async function persistYahooLeague(
   const rosterRows = imported.teams.map((team) => {
     const canonicalIds = team.players.map((player) => playerIds.get(player.playerKey)).filter((id): id is string => Boolean(id));
     const starters = team.players.filter((player) => designation(player.selectedPosition) === "starter").map((player) => playerIds.get(player.playerKey)).filter((id): id is string => Boolean(id));
+    const priorOwner = priorOwnerByTeam.get(team.teamKey);
     return {
       league_id: leagueId,
       provider_roster_id: team.teamKey,
-      owner_user_id: team.teamKey === imported.ownedTeamKey ? userId : null,
+      owner_user_id: team.teamKey === imported.ownedTeamKey ? userId : priorOwner || null,
       name: team.name,
       player_ids: canonicalIds,
       starter_ids: starters,
@@ -173,12 +317,50 @@ async function persistYahooLeague(
   const ownedRosterId = rosterIdByTeam.get(imported.ownedTeamKey);
   if (!ownedRosterId) throw new YahooSyncError("yahoo_owned_roster_missing");
 
+  let draftPickCount = 0;
+  if (imported.draftHistoryStatus === "ready") {
+    const draftPicks = imported.draftPicks || [];
+    const picks = new Set<number>();
+    const playerKeys = new Set<string>();
+    for (const pick of draftPicks) {
+      if (pick.teamKey !== imported.ownedTeamKey || !Number.isInteger(pick.overallPick) ||
+          pick.overallPick < 1 || pick.overallPick > 1000 || !Number.isInteger(pick.round) ||
+          pick.round < 1 || pick.round > 100 || !/^\d+\.p\.\d+$/.test(pick.playerKey) ||
+          picks.has(pick.overallPick) || playerKeys.has(pick.playerKey)) {
+        throw new YahooSyncError("yahoo_draft_payload_invalid");
+      }
+      picks.add(pick.overallPick);
+      playerKeys.add(pick.playerKey);
+    }
+    if (imported.draftStatus === "postdraft" && !draftPicks.length) throw new YahooSyncError("yahoo_draft_payload_invalid");
+    for (let offset = 0; offset < draftPicks.length; offset += 100) {
+      const batch = draftPicks.slice(offset, offset + 100);
+      const written = await client.from("league_draft_picks").upsert(batch.map((pick) => ({
+        league_id: leagueId, provider_team_key: pick.teamKey, overall_pick: pick.overallPick,
+        round: pick.round, provider_player_key: pick.playerKey,
+        player_name: pick.playerName || null, player_position: pick.playerPosition || null,
+        observed_at: now,
+      })), { onConflict: "league_id,overall_pick" });
+      if (written.error) throw new YahooSyncError(written.error.code === "42P01"
+        ? "yahoo_draft_migration_required" : "yahoo_draft_picks_write_failed");
+      draftPickCount += batch.length;
+    }
+    const stale = draftPicks.length
+      ? await client.from("league_draft_picks").delete().eq("league_id", leagueId)
+        .eq("provider_team_key", imported.ownedTeamKey)
+        .not("overall_pick", "in", `(${draftPicks.map((pick) => pick.overallPick).join(",")})`)
+      : await client.from("league_draft_picks").delete().eq("league_id", leagueId)
+        .eq("provider_team_key", imported.ownedTeamKey);
+    if (stale.error) throw new YahooSyncError("yahoo_draft_picks_cleanup_failed");
+  }
+
   const assignments = imported.teams.flatMap((team) => team.players.map((player) => ({
     roster_id: rosterIdByTeam.get(team.teamKey),
     league_id: leagueId,
     player_id: playerIds.get(player.playerKey),
     slot_definition_id: null,
     designation: designation(player.selectedPosition),
+    provider_status: player.status || null,
   }))).filter((row) => row.roster_id && row.player_id);
   if (assignments.length) {
     const assignmentResult = await client.from("roster_assignments").upsert(assignments, { onConflict: "roster_id,player_id" });
@@ -209,8 +391,41 @@ async function persistYahooLeague(
   }, { onConflict: "user_id,provider,provider_league_id,provider_team_id" });
   if (link.error) throw new YahooSyncError("yahoo_link_create_failed");
 
+  const matchupRows = imported.matchups.map((matchup) => {
+    const teamA = rosterIdByTeam.get(matchup.teamKeys[0]);
+    const teamB = rosterIdByTeam.get(matchup.teamKeys[1]);
+    const winner = matchup.winnerTeamKey ? rosterIdByTeam.get(matchup.winnerTeamKey) : null;
+    if (!teamA || !teamB || (matchup.winnerTeamKey && !winner)) throw new YahooSyncError("yahoo_matchup_roster_missing");
+    return {
+      league_id: leagueId,
+      provider: "yahoo",
+      week: matchup.week,
+      provider_matchup_key: matchup.teamKeys.join("|"),
+      team_a_roster_id: teamA,
+      team_b_roster_id: teamB,
+      team_a_points: matchup.points[0],
+      team_b_points: matchup.points[1],
+      team_a_projected_points: matchup.projectedPoints[0],
+      team_b_projected_points: matchup.projectedPoints[1],
+      winner_roster_id: winner,
+      status: matchup.status,
+      is_tied: matchup.isTied,
+      is_playoffs: matchup.isPlayoffs,
+      observed_at: now,
+    };
+  });
+  const matchupResult = await client.from("league_week_matchups")
+    .upsert(matchupRows, { onConflict: "league_id,week,provider_matchup_key" });
+  if (matchupResult.error) throw new YahooSyncError("yahoo_matchups_create_failed");
+
   // Stale-row cleanup happens only after every replacement row and ownership
   // link has been written. A mid-sync failure therefore preserves prior data.
+  const currentMatchupKeys = matchupRows.map((row) => JSON.stringify(row.provider_matchup_key)).join(",");
+  const staleMatchups = await client.from("league_week_matchups").delete()
+    .eq("league_id", leagueId)
+    .eq("week", imported.currentWeek)
+    .not("provider_matchup_key", "in", `(${currentMatchupKeys})`);
+  if (staleMatchups.error) throw new YahooSyncError("yahoo_matchups_cleanup_failed");
   const staleSlots = await client.from("roster_slot_definitions").delete().eq("league_id", leagueId).gte("slot_order", expandedSlots.length);
   if (staleSlots.error) throw new YahooSyncError("yahoo_roster_slots_cleanup_failed");
   for (const team of imported.teams) {
@@ -228,7 +443,9 @@ async function persistYahooLeague(
     .not("provider_roster_id", "in", `(${currentTeamKeys})`);
   if (staleRosters.error) throw new YahooSyncError("yahoo_rosters_cleanup_failed");
 
-  return { leagueId, rosterId: ownedRosterId, rosterCount: imported.teams.length, playerCount: playerIds.size };
+  return { leagueId, rosterId: ownedRosterId, rosterCount: imported.teams.length,
+    playerCount: playerIds.size, matchupCount: matchupRows.length, draftPickCount,
+    draftHistoryUnavailable: imported.draftStatus === "postdraft" && imported.draftHistoryStatus !== "ready" };
 }
 
 export async function persistYahooImports(
@@ -238,6 +455,21 @@ export async function persistYahooImports(
   externalUserId: string | null,
   imports: YahooLeagueImport[]
 ): Promise<YahooSyncSummary> {
+  // Validate every league before the first database write. A partial provider
+  // scoreboard must never replace or delete an existing weekly snapshot.
+  for (const imported of imports) {
+    const expected = new Set(imported.teams.map((team) => team.teamKey));
+    const actual = imported.matchups.flatMap((matchup) => matchup.teamKeys);
+    if (!expected.has(imported.ownedTeamKey) ||
+        !imported.teams.find((team) => team.teamKey === imported.ownedTeamKey)?.ownedByCurrentUser) {
+      throw new YahooSyncError("yahoo_owned_team_invalid");
+    }
+    if (expected.size !== imported.teams.length || actual.length !== expected.size ||
+        new Set(actual).size !== expected.size || actual.some((key) => !expected.has(key)) ||
+        imported.matchups.some((matchup) => matchup.week !== imported.currentWeek)) {
+      throw new YahooSyncError("yahoo_matchups_invalid");
+    }
+  }
   const results = [];
   for (const imported of imports) {
     results.push(await persistYahooLeague(client, userId, connectionId, externalUserId, imported));
@@ -246,6 +478,9 @@ export async function persistYahooImports(
     leaguesProcessed: results.length,
     rostersProcessed: results.reduce((sum, result) => sum + result.rosterCount, 0),
     playersProcessed: results.reduce((sum, result) => sum + result.playerCount, 0),
+    matchupsProcessed: results.reduce((sum, result) => sum + result.matchupCount, 0),
+    draftPicksProcessed: results.reduce((sum, result) => sum + result.draftPickCount, 0),
+    draftHistoryUnavailableLeagues: results.filter((result) => result.draftHistoryUnavailable).length,
     leagueIds: results.map((result) => result.leagueId),
   };
 }

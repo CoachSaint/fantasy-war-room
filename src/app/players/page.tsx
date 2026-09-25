@@ -1,6 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import { useConnectedLeague } from "@/lib/use-connected-league";
+import { LeagueGate } from "@/components/league-gate";
 import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoPlayers, demoEvidence, type ExtendedPlayer } from "@/lib/demo";
@@ -8,7 +10,149 @@ import { Search, FileText } from "lucide-react";
 
 type PosFilter = "ALL" | "QB" | "RB" | "WR" | "TE";
 
+type ConnectedPlayer = { id: string; full_name: string; team: string | null; position: string; status: string | null };
+type PlayerDetail = {
+  player: ConnectedPlayer;
+  snapshots: Array<{ season: number; week: number; data: Record<string, unknown>; observed_at: string; source: string }>;
+  evidence: Array<{ id: string; type: string; source: string; source_url: string | null; summary: string; observed_at: string }>;
+};
+
 export default function PlayersPage() {
+  const league = useConnectedLeague();
+  if (league.status === "loading") return <LeagueGate state={league} />;
+  if (league.status === "connected") return <ConnectedPlayersPage leagueId={league.context.league.id} leagueName={league.context.league.name} season={league.context.league.season} week={league.context.league.currentWeek} />;
+  if (league.status !== "auth_required" || process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  return <DemoPlayersPage />;
+}
+
+function ConnectedPlayersPage({ leagueId, leagueName, season, week }: { leagueId: string; leagueName: string; season: number; week: number }) {
+  const [players, setPlayers] = useState<ConnectedPlayer[] | null>(null);
+  const [detail, setDetail] = useState<PlayerDetail | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [search, setSearch] = useState("");
+  const [error, setError] = useState(false);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/players?leagueId=${encodeURIComponent(leagueId)}`, { credentials: "same-origin", signal: controller.signal });
+        if (!response.ok) return setError(true);
+        const body: unknown = await response.json();
+        if (!body || typeof body !== "object" || !("players" in body)) return setError(true);
+        const list = (body as { players: ConnectedPlayer[] }).players;
+        if (!Array.isArray(list)) return setError(true);
+        setPlayers(list);
+        setSelectedId(list[0]?.id ?? null);
+      } catch (failure) {
+        if (failure instanceof DOMException && failure.name === "AbortError") return;
+        setError(true);
+      }
+    })();
+    return () => controller.abort();
+  }, [leagueId]);
+
+  useEffect(() => {
+    if (!selectedId) return;
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/players?leagueId=${encodeURIComponent(leagueId)}&playerId=${encodeURIComponent(selectedId)}`, { credentials: "same-origin", signal: controller.signal });
+        if (!response.ok) return setError(true);
+        const body: unknown = await response.json();
+        if (!body || typeof body !== "object" || !("player" in body)) return setError(true);
+        setDetail(body as PlayerDetail);
+      } catch (failure) {
+        if (failure instanceof DOMException && failure.name === "AbortError") return;
+        setError(true);
+      }
+    })();
+    return () => controller.abort();
+  }, [leagueId, selectedId]);
+
+  const filtered = (players || []).filter((player) => `${player.full_name} ${player.team ?? ""} ${player.position}`.toLowerCase().includes(search.toLowerCase()));
+  const currentProjection = detail?.snapshots.find((snapshot) => snapshot.season === season && snapshot.week === week && snapshot.source === "sleeper_weekly_projections");
+  const actualHistory = (detail?.snapshots || [])
+    .filter((snapshot) => snapshot.source === "nflverse_stats_player" &&
+      typeof snapshot.data?.actualFantasyPoints === "number" && Number.isFinite(snapshot.data.actualFantasyPoints))
+    .sort((a, b) => b.season - a.season || b.week - a.week).slice(0, 3);
+  const latestObservedUsage = actualHistory.find((snapshot) =>
+    ["snapShare", "targetShare", "rushShare", "redZoneShare"].some((key) =>
+      typeof snapshot.data?.[key] === "number" && Number.isFinite(snapshot.data[key])));
+  const usageInputs: Array<[string, unknown]> = latestObservedUsage ? [
+    ["Snap share", latestObservedUsage.data.snapShare],
+    ["Target share", latestObservedUsage.data.targetShare],
+    ["Rush share", latestObservedUsage.data.rushShare],
+    ["Red-zone share", latestObservedUsage.data.redZoneShare],
+  ] : [];
+  const usageMetrics = usageInputs.filter((row): row is [string, number] =>
+    typeof row[1] === "number" && Number.isFinite(row[1]) && row[1] >= 0 && row[1] <= 100);
+  const observedChange = actualHistory.length >= 2
+    ? Number((Number(actualHistory[0].data.actualFantasyPoints)
+      - Number(actualHistory[actualHistory.length - 1].data.actualFantasyPoints)).toFixed(1)) : null;
+  const ppr = currentProjection?.data?.projectedFantasyPointsPpr;
+  const halfPpr = currentProjection?.data?.projectedFantasyPointsHalfPpr;
+  const standard = currentProjection?.data?.projectedFantasyPointsStandard;
+
+  return (
+    <>
+      <PageHeader eyebrow={`Player intelligence · ${leagueName}`} title="Connected players" description="League roster identities and source-backed player history." />
+      {error && <p role="alert">Player data could not be loaded. No demo players were substituted.</p>}
+      {!players && !error && <p role="status">Loading connected players…</p>}
+      {players && players.length === 0 && <section className="card"><h2 style={{ marginTop: 0 }}>No players imported</h2><p className="muted">Import your league roster to populate this view.</p></section>}
+      {players && players.length > 0 && (
+        <div className="grid grid-2">
+          <section className="card" style={{ display: "grid", gap: 10, alignContent: "start" }}>
+            <label htmlFor="connected-player-search">Search league players</label>
+            <input id="connected-player-search" type="search" value={search} onChange={(event) => setSearch(event.target.value)} style={{ minHeight: 44, padding: 10, border: "1px solid var(--line)", borderRadius: 10, background: "var(--surface-strong)", color: "var(--text)" }} />
+            <div style={{ display: "grid", gap: 6, maxHeight: 540, overflowY: "auto" }}>
+              {filtered.map((player) => <button key={player.id} type="button" onClick={() => { setDetail(null); setSelectedId(player.id); }} style={{ textAlign: "left", padding: 10, border: "1px solid var(--line)", borderRadius: 10, background: selectedId === player.id ? "var(--surface-strong)" : "var(--surface)", color: "var(--text)" }}><strong>{player.full_name}</strong><span className="muted" style={{ display: "block", fontSize: 12 }}>{player.position} · {player.team ?? "No team"}{player.status ? ` · ${player.status}` : ""}</span></button>)}
+            </div>
+          </section>
+          <section className="card" style={{ display: "grid", gap: 12, alignContent: "start" }}>
+            {!detail && <p role="status">Loading player detail…</p>}
+            {detail && <>
+              <h2 style={{ margin: 0 }}>{detail.player.full_name}</h2>
+              <p className="muted" style={{ margin: 0 }}>{detail.player.position} · {detail.player.team ?? "No team"}{detail.player.status ? ` · ${detail.player.status}` : ""}</p>
+              {currentProjection ? <p style={{ margin: 0 }}>Week {week} forecast: {typeof standard === "number" ? `${standard} standard` : "standard unavailable"} · {typeof halfPpr === "number" ? `${halfPpr} half PPR` : "half PPR unavailable"} · {typeof ppr === "number" ? `${ppr} PPR` : "PPR unavailable"} <span className="muted">(Sleeper, observed {new Date(currentProjection.observed_at).toLocaleString()}; accuracy unverified)</span></p> : <p className="muted">No current-week forward projection is available for this player.</p>}
+              <section aria-label="Observed game results" style={{ display: "grid", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Recent observed PPR points</h3>
+                {actualHistory.length ? <>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {[...actualHistory].reverse().map((snapshot) => <span key={`${snapshot.season}-${snapshot.week}`} className="pill">Week {snapshot.week}: {String(snapshot.data.actualFantasyPoints)}</span>)}
+                  </div>
+                  <p className="muted" style={{ margin: 0, fontSize: 12 }}>Published game results from nflverse; these are not future forecasts.</p>
+                </> : <p className="muted" style={{ margin: 0 }}>No recent published game results for this player.</p>}
+              </section>
+              <section aria-label="Observed player usage" style={{ display: "grid", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Recent role and usage</h3>
+                {observedChange != null && (
+                  <p className="muted" style={{ margin: 0 }}>Observed PPR change from Week {actualHistory[actualHistory.length - 1].week} to Week {actualHistory[0].week}: {observedChange > 0 ? "+" : ""}{observedChange} points. This is past performance, not a forecast.</p>
+                )}
+                {latestObservedUsage && usageMetrics.length ? (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+                      {usageMetrics.map(([label, value]) => (
+                        <div key={label} style={{ padding: 10, border: "1px solid var(--line)", borderRadius: 10 }}>
+                          <strong>{Math.round(value)}%</strong><span className="muted" style={{ display: "block", fontSize: 12 }}>{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>Observed Week {latestObservedUsage.week} nflverse usage, not a projected role.</p>
+                  </>
+                ) : <p className="muted" style={{ margin: 0 }}>No source-backed usage shares are available for recent games.</p>}
+              </section>
+              <h3 style={{ marginBottom: 0 }}>Evidence</h3>
+              {detail.evidence.length === 0 ? <p className="muted">No evidence has been saved for this player.</p> : detail.evidence.map((item) => <article key={item.id} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}><strong>{item.type.replaceAll("_", " ")}</strong><p style={{ margin: "4px 0" }}>{item.summary}</p><span className="muted" style={{ fontSize: 12 }}>{item.source} · {new Date(item.observed_at).toLocaleString()}</span>{item.source_url && <a href={item.source_url} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>Source</a>}</article>)}
+            </>}
+          </section>
+        </div>
+      )}
+    </>
+  );
+}
+
+function DemoPlayersPage() {
   const [search, setSearch] = useState("");
   const [posFilter, setPosFilter] = useState<PosFilter>("ALL");
   const [selectedPlayer, setSelectedPlayer] = useState<ExtendedPlayer>(demoPlayers[0]);
@@ -90,7 +234,7 @@ export default function PlayersPage() {
       </section>
 
       {/* Player Grid & Evidence Detail View */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 20 }}>
+      <div className="grid grid-2 player-explorer-layout" style={{ gap: 20 }}>
         {/* Left: Player List */}
         <section style={{ display: "grid", gap: 12 }}>
           {filteredPlayers.map((player) => {

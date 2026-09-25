@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Bot, Send, Sparkles, Minimize2, Cpu, RefreshCw } from "lucide-react";
+import { activeConnectedMembership } from "@/lib/active-connected-membership";
 
 let messageSequence = 0;
 const nextMessageId = (prefix: string) => `${prefix}-${++messageSequence}`;
@@ -15,11 +16,11 @@ interface Message {
 }
 
 const PRESET_PROMPTS = [
-  "Who should I start at FLEX?",
-  "Best waiver TE available?",
-  "Analyze Justin Jefferson score",
-  "Compare Jefferson vs CeeDee Lamb",
-  "Explain my lineup floor vs ceiling",
+  "Who should I start?",
+  "Who should I add or drop?",
+  "What changed since yesterday?",
+  "Why is my top action recommended?",
+  "Who should I draft?",
 ];
 
 export function CoachBot() {
@@ -28,7 +29,7 @@ export function CoachBot() {
     {
       id: "msg-welcome",
       sender: "coach",
-      text: "👋 I'm Coach War Room AI. This protected build uses clearly labeled fixture advice until an authenticated league with current evidence is connected.",
+      text: "👋 I'm Coach. Connected answers use your league's current decisions and evidence. Demo advice is labeled until a league is connected.",
       timestamp: new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
     },
   ]);
@@ -89,16 +90,19 @@ export function CoachBot() {
         }));
       history.push({ role: "user", content: textToSend });
 
-      let coachContext: { demo: true } | { leagueId: string } = { demo: true };
-      try {
-        const contextResponse = await fetch("/api/context", { credentials: "same-origin" });
-        const contextBody = await contextResponse.json() as { data?: { memberships?: Array<{ league?: { id?: unknown }; leagueId?: unknown }> } };
-        const membership = contextBody.data?.memberships?.[0];
-        const candidate = membership?.league?.id ?? membership?.leagueId;
-        if (contextResponse.ok && typeof candidate === "string" && candidate) coachContext = { leagueId: candidate };
-      } catch {
-        // The request remains explicitly in labeled demo mode.
+      let coachContext: { demo: true } | { leagueId: string } | null = null;
+      const contextResponse = await fetch("/api/context", { credentials: "same-origin" });
+      if (contextResponse.ok) {
+        const contextBody: unknown = await contextResponse.json();
+        const membership = activeConnectedMembership(contextBody);
+        const league = membership?.league;
+        if (league && typeof league === "object" && "id" in league && typeof league.id === "string") {
+          coachContext = { leagueId: league.id };
+        }
       }
+      if (!coachContext && process.env.NEXT_PUBLIC_DEMO_MODE === "true"
+        && contextResponse.status === 401) coachContext = { demo: true };
+      if (!coachContext) throw new Error("league_context_unavailable");
 
       const res = await fetch("/api/coach/chat", {
         method: "POST",
@@ -139,12 +143,12 @@ export function CoachBot() {
         <button
           type="button"
           ref={triggerRef}
-          aria-label="Open Coach War Room AI"
+          aria-label="Open Coach"
           onClick={() => setIsOpen(true)}
           style={{
             position: "fixed",
             right: 24,
-            bottom: 24,
+            bottom: "var(--coach-bottom)",
             zIndex: 40,
             display: "flex",
             alignItems: "center",
@@ -162,7 +166,7 @@ export function CoachBot() {
           }}
         >
           <Sparkles size={18} style={{ color: "#ffd700" }} />
-          <span>Ask Coach Bot</span>
+          <span>Ask Coach</span>
           <span
             style={{
               fontSize: 11,
@@ -171,7 +175,7 @@ export function CoachBot() {
               borderRadius: 999,
             }}
           >
-            Coach AI
+            Coach
           </span>
         </button>
       )}
@@ -185,10 +189,10 @@ export function CoachBot() {
           style={{
             position: "fixed",
             right: 24,
-            bottom: 24,
+            bottom: "var(--coach-dialog-bottom)",
             zIndex: 50,
             width: "min(440px, calc(100vw - 32px))",
-            height: "min(620px, calc(100vh - 48px))",
+            height: "min(620px, calc(100vh - var(--coach-dialog-bottom) - 24px))",
             display: "flex",
             flexDirection: "column",
             borderRadius: 24,
@@ -284,6 +288,7 @@ export function CoachBot() {
           <div
             style={{
               flex: 1,
+              minHeight: 0,
               padding: 16,
               overflowY: "auto",
               display: "flex",

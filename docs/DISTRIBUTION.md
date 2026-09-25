@@ -40,8 +40,10 @@ Apply migrations exactly once and in filename order:
 1. `supabase/migrations/0001_initial.sql`
 2. `supabase/migrations/0002_workspace_learning.sql`
 3. `supabase/migrations/0003_yahoo_integration.sql`
+4. `supabase/migrations/0004_yahoo_weekly_matchups.sql`
+5. `supabase/migrations/0005_yahoo_available_pool.sql`
 
-The second migration adds workspace membership, exact scoring rules, roster slot definitions, assignments, prediction/outcome, calibration, decision, and source-performance tables plus membership-scoped policies. The third queues encrypted, user-scoped Yahoo OAuth connections, provider links, and sync runs while extending the league provider constraint. Do not edit an applied migration or broaden a declaration to hide pending work. Before promotion, inspect the migration tool's declared and pending sets and apply only the exact pending files. There is no automatic down migration; retain a database rollback/PITR anchor and a tested application rollback plan.
+The second migration adds workspace membership, exact scoring rules, roster slot definitions, assignments, prediction/outcome, calibration, decision, and source-performance tables plus membership-scoped policies. The third queues encrypted, user-scoped Yahoo OAuth connections, provider links, and sync runs while extending the league provider constraint. The fourth adds current-week Yahoo matchup snapshots and member-only read access. Do not edit an applied migration or broaden a declaration to hide pending work. Before promotion, inspect the migration tool's declared and pending sets and apply only the exact pending files. There is no automatic down migration; retain a database rollback/PITR anchor where available and a tested application rollback plan. The dedicated free Nano project was empty at creation; free-tier PITR is not configured, so promotion must account for that limit.
 
 ## Vercel and Supabase cron behavior
 

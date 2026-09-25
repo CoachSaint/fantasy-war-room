@@ -21,6 +21,23 @@ const initialState: ConnectionState = {
   leagueCount: 0,
 };
 
+const callbackMessages: Record<string, string> = {
+  connected: "Yahoo account connected. Import your leagues and rosters below.",
+  access_denied: "Yahoo access was declined. You can try connecting again.",
+  credentials_pending: "Yahoo app credentials are not configured on this deployment.",
+  database_unavailable: "The app database is not configured on this deployment.",
+  migration_required: "The Yahoo database migration has not been applied.",
+  authentication_required: "Sign in to Fantasy War Room before connecting Yahoo.",
+  authentication_unavailable: "Fantasy War Room sign-in is temporarily unavailable.",
+  invalid_callback: "Yahoo returned an invalid authorization response. Try connecting again.",
+  authorization_failed: "Yahoo authorization did not complete. Try connecting again.",
+  state_mismatch: "The Yahoo connection expired or did not match this session. Try connecting again.",
+  refresh_token_missing: "Yahoo did not provide a refresh token. Try reconnecting the new app.",
+  persistence_failed: "The Yahoo connection could not be saved. Try again later.",
+  sync_in_progress: "A Yahoo import is running. Try connecting again after it finishes.",
+  token_exchange_failed: "Yahoo could not exchange the authorization code. Check the new app credentials and exact callback URL.",
+};
+
 export function YahooConnectionCard() {
   const [state, setState] = useState<ConnectionState>(initialState);
   const [syncing, setSyncing] = useState(false);
@@ -49,7 +66,19 @@ export function YahooConnectionCard() {
   }, []);
 
   useEffect(() => {
-    void loadStatus();
+    const url = new URL(window.location.href);
+    const callbackStatus = url.searchParams.get("yahoo");
+    if (callbackStatus) {
+      url.searchParams.delete("yahoo");
+      window.history.replaceState(window.history.state, "", url);
+    }
+    void loadStatus().then(() => {
+      if (callbackStatus && Object.hasOwn(callbackMessages, callbackStatus)) {
+        setState((previous) => callbackStatus === "connected" && !previous.connected
+          ? previous
+          : { ...previous, message: callbackMessages[callbackStatus] });
+      }
+    });
   }, [loadStatus]);
 
   const sync = async () => {
@@ -59,15 +88,33 @@ export function YahooConnectionCard() {
     try {
       const response = await fetch("/api/integrations/yahoo/sync", { method: "POST", credentials: "same-origin" });
       const body = await response.json() as Record<string, unknown>;
-      if (!response.ok) {
+      const data = body.data && typeof body.data === "object" ? body.data as Record<string, unknown> : {};
+      if (!response.ok && typeof data.leaguesProcessed !== "number") {
         const code = typeof body.error === "string" ? body.error : "yahoo_sync_failed";
         throw new Error(code === "yahoo_access_denied" ? "Yahoo access expired or was revoked. Reconnect the account." : `Yahoo import did not complete (${code}).`);
       }
-      const data = body.data && typeof body.data === "object" ? body.data as Record<string, unknown> : {};
       const leagues = typeof data.leaguesProcessed === "number" ? data.leaguesProcessed : 0;
       const rosters = typeof data.rostersProcessed === "number" ? data.rostersProcessed : 0;
-      setState((previous) => ({ ...previous, connected: true, message: `Yahoo import completed: ${leagues} league${leagues === 1 ? "" : "s"} and ${rosters} roster${rosters === 1 ? "" : "s"}.` }));
+      const draftPicks = typeof data.draftPicksProcessed === "number" ? data.draftPicksProcessed : 0;
+      const draftUnavailable = typeof data.draftHistoryUnavailableLeagues === "number" ? data.draftHistoryUnavailableLeagues : 0;
+      const decisions = Array.isArray(data.decisions) ? data.decisions as Record<string, unknown>[] : [];
+      const evaluated = decisions.filter((item) => item.status === "evaluated").length;
+      const waiting = decisions.filter((item) => item.status === "not_ready").length;
+      const projectionWaiting = decisions.filter((item) => item.status === "not_ready"
+        && typeof item.reason === "string" && item.reason.includes("projection")).length;
+      const failed = decisions.filter((item) => item.status === "failed").length;
+      const decisionMessage = failed ? ` Decision refresh failed for ${failed} league${failed === 1 ? "" : "s"}.`
+        : waiting ? projectionWaiting === waiting
+          ? ` ${waiting} league${waiting === 1 ? "" : "s"} still need current Scout projections before advice can appear.`
+          : ` ${waiting} league${waiting === 1 ? "" : "s"} still need current source data or league setup before advice can appear.`
+          : evaluated ? ` Current decisions checked for ${evaluated} league${evaluated === 1 ? "" : "s"}.` : "";
+      const availabilityMessage = !response.ok ? " Available-player import was incomplete; waiver advice is limited." : "";
+      const draftMessage = draftUnavailable
+        ? ` Yahoo draft history could not be verified for ${draftUnavailable} completed league draft${draftUnavailable === 1 ? "" : "s"}.`
+        : draftPicks ? ` ${draftPicks} of your Yahoo draft pick${draftPicks === 1 ? "" : "s"} saved.` : "";
       await loadStatus();
+      setState((previous) => ({ ...previous, connected: true,
+        message: `Yahoo import saved: ${leagues} league${leagues === 1 ? "" : "s"} and ${rosters} roster${rosters === 1 ? "" : "s"}.${availabilityMessage}${draftMessage}${decisionMessage}` }));
     } catch (error) {
       setState((previous) => ({ ...previous, message: error instanceof Error ? error.message : "Yahoo import failed safely." }));
     } finally {
@@ -101,7 +148,7 @@ export function YahooConnectionCard() {
           </div>
         </div>
         <span style={{ borderRadius: 999, padding: "5px 10px", fontSize: 11, fontWeight: 800, background: state.connected ? "rgba(22,133,75,0.12)" : "var(--surface)", color: state.connected ? "var(--good)" : "var(--muted)", border: "1px solid var(--line)" }}>
-          {state.loading ? "CHECKING" : state.connected ? "CONNECTED" : waiting ? "AWAITING APPROVAL" : "READY TO CONNECT"}
+          {state.loading ? "CHECKING" : state.connected ? "CONNECTED" : waiting ? "SETUP REQUIRED" : "READY TO CONNECT"}
         </span>
       </div>
 
@@ -111,7 +158,7 @@ export function YahooConnectionCard() {
         {state.lastSyncedAt && <span className="muted">Last sync {new Date(state.lastSyncedAt).toLocaleString()}</span>}
       </div>
 
-      {waiting && <p className="muted" style={{ margin: 0, fontSize: 13 }}>The integration code is queued. After Yahoo approves the developer application, add the four server-only environment values and apply migration 0003; this button will activate without another build.</p>}
+      {waiting && <p className="muted" style={{ margin: 0, fontSize: 13 }}>Create a new Yahoo developer app with Fantasy Sports: Read, submit its Client ID to Yahoo for confirmation, then configure the four server-only environment values and the Yahoo database migration. An existing Yahoo app will not pick up the permission.</p>}
       {state.message && <div role="status" style={{ padding: 10, borderRadius: 10, background: "var(--surface)", fontSize: 12 }}>{state.message}</div>}
 
       <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
@@ -121,6 +168,7 @@ export function YahooConnectionCard() {
         {state.connected && <button type="button" disabled={syncing} onClick={sync} style={{ minHeight: 40, borderRadius: 999, padding: "0 15px", display: "inline-flex", alignItems: "center", gap: 7, border: 0, background: "var(--text)", color: "var(--bg)", fontWeight: 800, cursor: syncing ? "wait" : "pointer" }}>{syncing ? <LoaderCircle size={15} className="spin" /> : <RefreshCw size={15} />} {syncing ? "Importing…" : "Import Yahoo roster"}</button>}
         {state.connected && <button type="button" disabled={syncing} onClick={disconnect} style={{ minHeight: 40, borderRadius: 999, padding: "0 15px", border: "1px solid var(--line)", background: "transparent", color: "var(--muted)", fontWeight: 700, cursor: "pointer" }}>Disconnect</button>}
       </div>
+      <p className="muted" style={{ margin: 0, fontSize: 11 }}>Powered by JTF Software Solutions</p>
     </section>
   );
 }

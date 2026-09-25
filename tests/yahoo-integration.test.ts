@@ -1,6 +1,9 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizeYahooLeagueImport, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
+import { getYahooAvailablePool, normalizeYahooAvailablePage, normalizeYahooDraftResults, normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
+import type { YahooLeagueImport } from "../src/lib/data/yahoo";
+import { persistYahooImports } from "../src/lib/integrations/yahoo-sync";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildYahooAuthorizationUrl,
   createYahooOAuthState,
@@ -13,6 +16,7 @@ import { GET as yahooStatusGET } from "../src/app/api/integrations/yahoo/status/
 import { GET as yahooStartGET } from "../src/app/api/integrations/yahoo/start/route";
 import { GET as yahooCallbackGET } from "../src/app/api/integrations/yahoo/callback/route";
 import { POST as yahooSyncPOST } from "../src/app/api/integrations/yahoo/sync/route";
+import { POST as yahooRefreshPOST } from "../src/app/api/integrations/yahoo/refresh/route";
 
 const originalEnv = {
   clientId: process.env.YAHOO_CLIENT_ID,
@@ -20,6 +24,7 @@ const originalEnv = {
   redirectUri: process.env.YAHOO_REDIRECT_URI,
   encryptionKey: process.env.YAHOO_TOKEN_ENCRYPTION_KEY,
   scope: process.env.YAHOO_OAUTH_SCOPE,
+  cronSecret: process.env.CRON_SECRET,
 };
 
 function setValidEnvironment() {
@@ -33,13 +38,28 @@ function setValidEnvironment() {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const [key, value] of Object.entries(originalEnv)) {
-    const envName = ({ clientId: "YAHOO_CLIENT_ID", clientSecret: "YAHOO_CLIENT_SECRET", redirectUri: "YAHOO_REDIRECT_URI", encryptionKey: "YAHOO_TOKEN_ENCRYPTION_KEY", scope: "YAHOO_OAUTH_SCOPE" } as const)[key as keyof typeof originalEnv];
+    const envName = ({ clientId: "YAHOO_CLIENT_ID", clientSecret: "YAHOO_CLIENT_SECRET", redirectUri: "YAHOO_REDIRECT_URI", encryptionKey: "YAHOO_TOKEN_ENCRYPTION_KEY", scope: "YAHOO_OAUTH_SCOPE", cronSecret: "CRON_SECRET" } as const)[key as keyof typeof originalEnv];
     if (value === undefined) delete process.env[envName];
     else process.env[envName] = value;
   }
 });
 
 describe("Yahoo OAuth queue", () => {
+  it("rejects scheduled refresh without the exact cron bearer", async () => {
+    setValidEnvironment();
+    process.env.CRON_SECRET = "fixture-cron-secret";
+    const url = "http://localhost/api/integrations/yahoo/refresh";
+    for (const request of [
+      new Request(url, { method: "POST" }),
+      new Request(`${url}?secret=fixture-cron-secret`, { method: "POST" }),
+      new Request(url, { method: "POST", headers: { "x-cron-secret": "fixture-cron-secret" } }),
+      new Request(url, { method: "POST", headers: { authorization: "Bearer wrong-secret" } }),
+    ]) {
+      const response = await yahooRefreshPOST(request);
+      expect(response.status).toBe(401);
+    }
+  });
+
   it("stays inert and reports awaiting credentials when approval values are absent", async () => {
     delete process.env.YAHOO_CLIENT_ID;
     delete process.env.YAHOO_CLIENT_SECRET;
@@ -87,6 +107,58 @@ describe("Yahoo OAuth queue", () => {
 });
 
 describe("Yahoo provider normalization", () => {
+  it("reads only ordered picks for the authenticated team", () => {
+    const payload = { fantasy_content: { team: [{ draft_results: {
+      0: { draft_result: [{ pick: "14" }, { round: "2" }, { team_key: "449.l.123.t.4" }, { player_key: "449.p.31" }] },
+      1: { draft_result: [{ pick: "4" }, { round: "1" }, { team_key: "449.l.123.t.4" }, { player_key: "449.p.32" }] },
+    } }] } };
+    expect(normalizeYahooDraftResults(payload, "449.l.123.t.4")).toMatchObject([
+      { overallPick: 4, round: 1, playerKey: "449.p.32" },
+      { overallPick: 14, round: 2, playerKey: "449.p.31" },
+    ]);
+    const foreign = structuredClone(payload);
+    foreign.fantasy_content.team[0].draft_results[0].draft_result[2].team_key = "449.l.123.t.8";
+    expect(() => normalizeYahooDraftResults(foreign, "449.l.123.t.4"))
+      .toThrow("yahoo_draft_payload_invalid");
+    expect(() => normalizeYahooDraftResults({ fantasy_content: { team: [] } }, "449.l.123.t.4"))
+      .toThrow("yahoo_draft_payload_invalid");
+  });
+  it("accepts league-available players without roster positions and rejects foreign game keys", () => {
+    const page = { fantasy_content: { league: [{ players: {
+      count: 2,
+      0: { player: [[{ player_key: "449.p.31" }, { player_id: "31" }, { name: { full: "Available Runner" } }, { display_position: "RB" }, { status: "Q" }]] },
+      1: { player: [[{ player_key: "449.p.32" }, { player_id: "32" }, { name: { full: "Available Receiver" } }, { display_position: "WR" }]] },
+    } }] } };
+    expect(normalizeYahooAvailablePage(page, "449.l.123")).toMatchObject([
+      { playerKey: "449.p.31", fullName: "Available Runner", position: "RB", status: "Q" },
+      { playerKey: "449.p.32", fullName: "Available Receiver", position: "WR" },
+    ]);
+    expect(() => normalizeYahooAvailablePage({ fantasy_content: { league: [] } }, "449.l.123"))
+      .toThrow("yahoo_available_payload_invalid");
+    const foreign = structuredClone(page);
+    foreign.fantasy_content.league[0].players[1].player[0][0].player_key = "450.p.32";
+    expect(() => normalizeYahooAvailablePage(foreign, "449.l.123"))
+      .toThrow("yahoo_available_payload_invalid");
+  });
+
+  it("pages Yahoo's league-available filter with a bounded candidate scan", async () => {
+    const response = (start: number, count: number) => ({ fantasy_content: { league: [{ players: {
+      count,
+      ...Object.fromEntries(Array.from({ length: count }, (_, index) => [index, {
+        player: [[{ player_key: `449.p.${start + index + 1}` }, { name: { full: `Candidate ${start + index + 1}` } }, { display_position: "RB" }]],
+      }])),
+    } }] } });
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toContain("/league/449.l.123/players;status=A;sort=OR");
+      const start = Number(/;start=(\d+)/.exec(url.pathname)?.[1]);
+      return Response.json(response(start, start === 0 ? 50 : 2));
+    });
+    const pool = await getYahooAvailablePool("test-token", "449.l.123");
+    expect(pool).toMatchObject({ leagueKey: "449.l.123", truncated: false });
+    expect(pool.players).toHaveLength(52);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
   const ownedTeam = {
     team: [[
       { team_key: "449.l.123.t.4" },
@@ -107,46 +179,105 @@ describe("Yahoo provider normalization", () => {
   });
 
   it("normalizes league slots, scoring, and every roster without first-team fallback", () => {
-    const metadata = { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Family League" }, { season: "2026" }, { current_week: "4" }]] } };
+    const metadata = { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Family League" }, { season: "2026" }, { current_week: "4" }, { draft_status: "postdraft" }]] } };
     const settings = { fantasy_content: { league: [{ settings: [
       { roster_positions: { 0: { roster_position: [{ position: "QB" }, { count: 1 }] }, 1: { roster_position: [{ position: "W/R/T" }, { count: 2 }] }, 2: { roster_position: [{ position: "BN" }, { count: 6 }] } } },
-      { stat_modifiers: { stats: { 0: { stat: [{ stat_id: "4" }, { value: "4" }] }, 1: { stat: [{ stat_id: "10" }, { value: "0.5" }] } } } },
+      { stat_categories: { stats: { 0: { stat: [{ stat_id: "4" }, { name: "Passing Yards" }] }, 1: { stat: [{ stat_id: "11" }, { name: "Receptions" }] } } } },
+      { stat_modifiers: { stats: { 0: { stat: [{ stat_id: "4" }, { value: "0.04" }] }, 1: { stat: [{ stat_id: "11" }, { value: "0.5" }] } } } },
     ] }] } };
     const teams = { fantasy_content: { league: [{ teams: { 0: ownedTeam, 1: otherTeam } }] } };
+    const matchup = [
+      { week: "4" }, { status: "midevent" }, { is_playoffs: "0" },
+      { teams: {
+        0: { team: [[{ team_key: "449.l.123.t.4" }, { team_points: { total: "81.25" } }, { team_projected_points: { total: "110.50" } }]] },
+        1: { team: [[{ team_key: "449.l.123.t.8" }, { team_points: { total: "79.00" } }, { team_projected_points: { total: "99.25" } }]] },
+      } },
+    ];
+    const scoreboard = { fantasy_content: { league: [{ scoreboard: [{ matchups: { 0: { matchup } } }] }] } };
     const player = (teamKey: string, playerKey: string, name: string, selected: string) => ({ fantasy_content: { team: [[{ team_key: teamKey }, { roster: { players: { 0: { player: [[{ player_key: playerKey }, { player_id: playerKey.split(".").pop() }, { name: { full: name } }, { editorial_team_abbr: "KC" }, { display_position: "QB" }, { selected_position: [{ position: selected }] }]] } } } }]] } });
     const rosterPayloads = new Map<string, unknown>([
       ["449.l.123.t.4", player("449.l.123.t.4", "449.p.1", "Starter One", "QB")],
       ["449.l.123.t.8", player("449.l.123.t.8", "449.p.2", "Bench Two", "BN")],
     ]);
-    const imports = normalizeYahooLeagueImport(metadata, settings, teams, rosterPayloads, "449.l.123.t.4");
+    const imports = normalizeYahooLeagueImport(metadata, settings, teams, scoreboard, rosterPayloads, "449.l.123.t.4");
 
-    expect(imports).toMatchObject({ leagueKey: "449.l.123", season: 2026, currentWeek: 4, ownedTeamKey: "449.l.123.t.4" });
+    expect(imports).toMatchObject({ leagueKey: "449.l.123", season: 2026, currentWeek: 4, ownedTeamKey: "449.l.123.t.4", draftStatus: "postdraft", draftHistoryStatus: "unavailable" });
     expect(imports.rosterSlots.map((slot) => slot.slotType)).toEqual(["QB", "FLEX", "BENCH"]);
-    expect(imports.scoringModifiers).toEqual({ "4": 4, "10": 0.5 });
+    expect(imports.scoringModifiers).toEqual({ "4": 0.04, "11": 0.5 });
     expect(imports.teams).toHaveLength(2);
     expect(imports.teams[0].players[0]).toMatchObject({ playerKey: "449.p.1", fullName: "Starter One", selectedPosition: "QB" });
     expect(imports.teams[1].players[0]).toMatchObject({ playerKey: "449.p.2", selectedPosition: "BN" });
+    expect(imports.matchups).toEqual([expect.objectContaining({
+      week: 4,
+      teamKeys: ["449.l.123.t.4", "449.l.123.t.8"],
+      points: [81.25, 79],
+      projectedPoints: [110.5, 99.25],
+      status: "midevent",
+    })]);
 
     expect(() => normalizeYahooLeagueImport(
       { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Missing season" }, { current_week: "4" }]] } },
       settings,
       teams,
+      scoreboard,
       new Map(),
       "449.l.123.t.4"
     )).toThrow("yahoo_payload_invalid");
-    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "DB" }, { count: 1 }], stat: [{ stat_id: "4" }, { value: 4 }] } }, teams, rosterPayloads, "449.l.123.t.4"))
+    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "DB" }, { count: 1 }], stat: [{ stat_id: "4" }, { value: 4 }] } }, teams, scoreboard, rosterPayloads, "449.l.123.t.4"))
       .toThrow("yahoo_payload_unsupported");
-    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "QB" }, { count: 1 }] } }, teams, rosterPayloads, "449.l.123.t.4"))
+    expect(() => normalizeYahooLeagueImport(metadata, { fantasy_content: { roster_position: [{ position: "QB" }, { count: 1 }] } }, teams, scoreboard, rosterPayloads, "449.l.123.t.4"))
       .toThrow("yahoo_payload_invalid");
     const missingSelected = new Map(rosterPayloads);
     missingSelected.set("449.l.123.t.4", { fantasy_content: { players: { 0: { player: [[{ player_key: "449.p.1" }, { name: { full: "Starter One" } }, { display_position: "QB" }]] } } } });
-    expect(() => normalizeYahooLeagueImport(metadata, settings, teams, missingSelected, "449.l.123.t.4"))
+    expect(() => normalizeYahooLeagueImport(metadata, settings, teams, scoreboard, missingSelected, "449.l.123.t.4"))
       .toThrow("yahoo_payload_unsupported");
+    expect(() => normalizeYahooMatchups({ fantasy_content: { matchups: {} } }, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
+      .toThrow("yahoo_matchups_invalid");
+    const foreignTeam = JSON.parse(JSON.stringify(scoreboard));
+    foreignTeam.fantasy_content.league[0].scoreboard[0].matchups[0].matchup[3].teams[1].team[0][0].team_key = "449.l.123.t.99";
+    expect(() => normalizeYahooMatchups(foreignTeam, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
+      .toThrow("yahoo_matchups_invalid");
+    expect(() => normalizeYahooMatchups(scoreboard, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8", "449.l.123.t.9", "449.l.123.t.10"]))
+      .toThrow("yahoo_matchups_invalid");
+    const duplicateTeam = JSON.parse(JSON.stringify(scoreboard));
+    duplicateTeam.fantasy_content.league[0].scoreboard[0].matchups[0].matchup[3].teams[1].team[0][0].team_key = "449.l.123.t.4";
+    expect(() => normalizeYahooMatchups(duplicateTeam, "449.l.123", 4, ["449.l.123.t.4", "449.l.123.t.8"]))
+      .toThrow("yahoo_matchups_invalid");
+  });
+
+  it("rejects a partial scoreboard before any existing rows can be changed", async () => {
+    let databaseCalls = 0;
+    const client = { from: () => { databaseCalls++; throw new Error("database should not be reached"); } } as unknown as SupabaseClient;
+    const partial = {
+      currentWeek: 4,
+      ownedTeamKey: "t.1",
+      teams: ["t.1", "t.2", "t.3", "t.4"].map((teamKey) => ({ teamKey, ownedByCurrentUser: teamKey === "t.1" })),
+      matchups: [{ week: 4, teamKeys: ["t.1", "t.2"] }],
+    } as YahooLeagueImport;
+    await expect(persistYahooImports(client, "user", "connection", null, [partial]))
+      .rejects.toMatchObject({ code: "yahoo_matchups_invalid" });
+    expect(databaseCalls).toBe(0);
+  });
+
+  it("rejects a claimed team that Yahoo did not mark as owned before database access", async () => {
+    let databaseCalls = 0;
+    const client = { from: () => { databaseCalls++; throw new Error("database should not be reached"); } } as unknown as SupabaseClient;
+    const fabricated = {
+      currentWeek: 4, ownedTeamKey: "449.l.123.t.1",
+      teams: ["449.l.123.t.1", "449.l.123.t.2"].map((teamKey) => ({ teamKey, ownedByCurrentUser: false })),
+      matchups: [{ week: 4, teamKeys: ["449.l.123.t.1", "449.l.123.t.2"] }],
+    } as YahooLeagueImport;
+    await expect(persistYahooImports(client, "user", "connection", null, [fabricated]))
+      .rejects.toMatchObject({ code: "yahoo_owned_team_invalid" });
+    expect(databaseCalls).toBe(0);
   });
 });
 
 describe("Yahoo migration security contract", () => {
   const migration = readFileSync(new URL("../supabase/migrations/0003_yahoo_integration.sql", import.meta.url), "utf8");
+  const matchupMigration = readFileSync(new URL("../supabase/migrations/0004_yahoo_weekly_matchups.sql", import.meta.url), "utf8");
+  const availabilityMigration = readFileSync(new URL("../supabase/migrations/0005_yahoo_available_pool.sql", import.meta.url), "utf8");
+  const draftMigration = readFileSync(new URL("../supabase/migrations/0008_yahoo_draft_history.sql", import.meta.url), "utf8");
 
   it("stores ciphertext server-side and exposes no authenticated token policy", () => {
     expect(migration).toMatch(/access_token_ciphertext text not null/);
@@ -160,5 +291,28 @@ describe("Yahoo migration security contract", () => {
     expect(migration).toMatch(/create table if not exists public\.provider_identity_queue/);
     expect(migration).toMatch(/alter table public\.provider_identity_queue enable row level security/);
     expect(migration).not.toMatch(/create policy .*provider_identity_queue/);
+  });
+
+  it("scopes Yahoo acquisition candidates to league members and requires freshness", () => {
+    expect(availabilityMigration).toMatch(/alter table public\.league_available_players enable row level security/);
+    expect(availabilityMigration).toMatch(/alter table public\.league_available_scans enable row level security/);
+    expect(availabilityMigration).toMatch(/public\.can_access_league\(league_id\)/);
+    expect(availabilityMigration).toMatch(/fresh_until timestamptz not null/);
+    expect(availabilityMigration).not.toMatch(/for (insert|update|delete) using/);
+  });
+
+  it("keeps current-week matchups league-scoped and server-written", () => {
+    expect(matchupMigration).toMatch(/foreign key \(team_a_roster_id, league_id\) references public\.rosters\(id, league_id\)/);
+    expect(matchupMigration).toMatch(/foreign key \(team_b_roster_id, league_id\) references public\.rosters\(id, league_id\)/);
+    expect(matchupMigration).toMatch(/alter table public\.league_week_matchups enable row level security/);
+    expect(matchupMigration).toMatch(/for select to authenticated using \(public\.can_access_league\(league_id\)\)/);
+    expect(matchupMigration).not.toMatch(/for (insert|update|delete|all) to authenticated/);
+  });
+
+  it("keeps Yahoo pick history league-scoped and server-written", () => {
+    expect(draftMigration).toMatch(/create table if not exists public\.league_draft_picks/);
+    expect(draftMigration).toMatch(/alter table public\.league_draft_picks enable row level security/);
+    expect(draftMigration).toMatch(/for select to authenticated using \(public\.can_access_league\(league_id\)\)/);
+    expect(draftMigration).not.toMatch(/for (insert|update|delete|all) to authenticated/);
   });
 });

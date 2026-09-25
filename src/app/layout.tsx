@@ -17,6 +17,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
           <ManagerContext />
           {children}
         </main>
+        <footer className="site-attribution">Powered by JTF Software Solutions</footer>
         <CoachBot />
         <AppNav />
       </body>

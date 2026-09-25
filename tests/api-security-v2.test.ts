@@ -2,7 +2,8 @@ import { describe, expect, it, vi } from "vitest";
 import { GET as recommendationsGET } from "../src/app/api/recommendations/route";
 import { POST as coachPOST } from "../src/app/api/coach/chat/route";
 import { POST as setupPOST } from "../src/app/api/leagues/setup/route";
-import { GET as contextGET } from "../src/app/api/context/route";
+import { GET as contextGET, PATCH as contextPATCH } from "../src/app/api/context/route";
+import { PATCH as historyPATCH } from "../src/app/api/history/route";
 
 // Keep these route tests hermetic. The negative paths should be decided before
 // any real Supabase call, so no test needs live credentials or a live database.
@@ -45,6 +46,18 @@ const validSetup = {
 };
 
 describe("API security contracts", () => {
+  it("rejects malformed or unauthenticated decision responses", async () => {
+    const url = "http://localhost:3000/api/history";
+    const invalid = await historyPATCH(new Request(url, { method: "PATCH", body: "not-json" }));
+    expect(invalid.status).toBe(400);
+    const tooLarge = await historyPATCH(new Request(url, { method: "PATCH", body: "x".repeat(4097) }));
+    expect(tooLarge.status).toBe(413);
+    const anonymous = await historyPATCH(new Request(url, { method: "PATCH", body: JSON.stringify({
+      leagueId, decisionId: "00000000-0000-4000-8000-000000000002", response: "accepted",
+    }) }));
+    expect(anonymous.status).toBe(401);
+  });
+
   it("requires explicit demo mode or authenticated league access for recommendations", async () => {
     const noMode = await recommendationsGET(new Request("http://localhost:3000/api/recommendations"));
     expect(noMode.status).toBe(400);
@@ -121,5 +134,15 @@ describe("API security contracts", () => {
     const body = await jsonBody(response);
     expect(body.ok).toBe(false);
     expect(body.error).toBe("authentication_required");
+  });
+
+  it("rejects malformed and anonymous league switches", async () => {
+    const url = "http://localhost:3000/api/context";
+    const malformed = await contextPATCH(new Request(url, { method: "PATCH", body: "{" }));
+    expect(malformed.status).toBe(400);
+    const invalid = await contextPATCH(new Request(url, { method: "PATCH", body: JSON.stringify({ leagueId: "not-a-uuid" }) }));
+    expect(invalid.status).toBe(400);
+    const anonymous = await contextPATCH(new Request(url, { method: "PATCH", body: JSON.stringify({ leagueId }) }));
+    expect(anonymous.status).toBe(401);
   });
 });

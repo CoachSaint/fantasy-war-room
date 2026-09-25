@@ -2,6 +2,78 @@ import type { LeagueContext, Player, Position } from "@/lib/types";
 
 const SLEEPER_BASE = "https://api.sleeper.app/v1";
 
+export interface SleeperWeeklyProjection {
+  sleeperId: string;
+  season: number;
+  week: number;
+  ppr: number | null;
+  halfPpr: number | null;
+  standard: number | null;
+  stats: Record<string, number>;
+  observedAt: string;
+  adpPpr?: number | null;
+  adpHalfPpr?: number | null;
+  adpStandard?: number | null;
+}
+
+const projectionStatKeys = new Set([
+  "pass_yd", "pass_td", "pass_int", "rush_att", "rush_yd", "rush_td",
+  "rec", "rec_yd", "rec_td", "pass_2pt", "rush_2pt", "rec_2pt",
+  "fum_lost", "st_td", "def_fum_td", "off_fum_rec_td",
+]);
+
+function finiteProjection(value: unknown, max = 100): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed >= -20 && parsed <= max ? parsed : null;
+}
+
+function finiteAdp(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  // The provider also uses 1000 as an undrafted sentinel; it is not a market pick.
+  return Number.isFinite(parsed) && parsed >= 1 && parsed < 1000 ? parsed : null;
+}
+
+/** Rows containing only ADP are excluded; they are not weekly forecasts. */
+export function parseSleeperWeeklyProjections(
+  raw: unknown, season: number, week: number, observedAt = new Date().toISOString()
+): SleeperWeeklyProjection[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  return Object.entries(raw).flatMap(([sleeperId, rawStats]) => {
+    if (!/^\d+$/.test(sleeperId) || !rawStats || typeof rawStats !== "object" || Array.isArray(rawStats)) return [];
+    const row = rawStats as Record<string, unknown>;
+    const ppr = finiteProjection(row.pts_ppr);
+    const halfPpr = finiteProjection(row.pts_half_ppr);
+    const standard = finiteProjection(row.pts_std);
+    if (ppr == null && halfPpr == null && standard == null) return [];
+    const stats = Object.fromEntries(Object.entries(row)
+      .filter(([key, value]) => projectionStatKeys.has(key) && typeof value === "number" && Number.isFinite(value))
+      .map(([key, value]) => [key, Number(value)]));
+    return [{ sleeperId, season, week, ppr, halfPpr, standard, stats, observedAt }];
+  });
+}
+
+/** Season totals are a distinct source, never used as a current-week forecast. */
+export function parseSleeperSeasonProjections(
+  raw: unknown, season: number, observedAt = new Date().toISOString()
+): SleeperWeeklyProjection[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  return Object.entries(raw).flatMap(([sleeperId, rawStats]) => {
+    if (!/^\d+$/.test(sleeperId) || !rawStats || typeof rawStats !== "object" || Array.isArray(rawStats)) return [];
+    const row = rawStats as Record<string, unknown>;
+    const ppr = finiteProjection(row.pts_ppr, 600);
+    const halfPpr = finiteProjection(row.pts_half_ppr, 600);
+    const standard = finiteProjection(row.pts_std, 600);
+    if (ppr == null && halfPpr == null && standard == null) return [];
+    const stats = Object.fromEntries(Object.entries(row)
+      .filter(([key, value]) => projectionStatKeys.has(key) && typeof value === "number" && Number.isFinite(value))
+      .map(([key, value]) => [key, Number(value)]));
+    if (!Object.keys(stats).length) return [];
+    return [{ sleeperId, season, week: 0, ppr, halfPpr, standard, stats, observedAt,
+      adpPpr: finiteAdp(row.adp_ppr), adpHalfPpr: finiteAdp(row.adp_half_ppr),
+      adpStandard: finiteAdp(row.adp_std) }];
+  });
+}
+
 async function sleeperFetch<T>(path: string): Promise<T> {
   const response = await fetch(`${SLEEPER_BASE}${path}`, {
     headers: { Accept: "application/json" },
@@ -95,6 +167,36 @@ const playersCache: PlayersCache = {
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export const sleeper = {
+  getSeasonProjections: async (season: number): Promise<SleeperWeeklyProjection[]> => {
+    // Observed public source; not part of Sleeper's published API reference.
+    // Keep it optional and reject ADP-only rows.
+    const response = await fetch(`${SLEEPER_BASE}/projections/nfl/regular/${season}`, {
+      headers: { Accept: "application/json" },
+      next: { revalidate: 21600 },
+      signal: AbortSignal.timeout(20_000),
+    });
+    if (!response.ok) throw new Error("sleeper_season_projections_unavailable");
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > 4_000_000) throw new Error("sleeper_season_projections_too_large");
+    const body = await response.text();
+    if (new TextEncoder().encode(body).length > 4_000_000) throw new Error("sleeper_season_projections_too_large");
+    return parseSleeperSeasonProjections(JSON.parse(body) as unknown, season);
+  },
+  getWeeklyProjections: async (season: number, week: number): Promise<SleeperWeeklyProjection[]> => {
+    // This observed public endpoint is outside Sleeper's published API reference.
+    // Keep it optional and never infer a projection from an ADP-only row.
+    const response = await fetch(`${SLEEPER_BASE}/projections/nfl/regular/${season}/${week}`, {
+      headers: { Accept: "application/json" },
+      next: { revalidate: 1800 },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error("sleeper_projections_unavailable");
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > 2_000_000) throw new Error("sleeper_projections_too_large");
+    const body = await response.text();
+    if (new TextEncoder().encode(body).length > 2_000_000) throw new Error("sleeper_projections_too_large");
+    return parseSleeperWeeklyProjections(JSON.parse(body) as unknown, season, week);
+  },
   getUser: (usernameOrId: string) =>
     sleeperFetch<SleeperUser>(`/user/${encodeURIComponent(usernameOrId)}`),
 

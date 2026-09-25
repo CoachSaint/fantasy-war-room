@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp, ShieldCheck, Zap, Info } from "lucide-react";
-import type { Recommendation } from "@/lib/types";
+import type { Evidence, Recommendation } from "@/lib/types";
 import { demoEvidence } from "@/lib/demo";
 
 const label: Record<Recommendation["kind"], string> = {
@@ -25,11 +25,11 @@ const kindColor: Record<Recommendation["kind"], string> = {
   watch: "var(--warn)",
 };
 
-export function DecisionCard({ item }: { item: Recommendation }) {
+export function DecisionCard({ item, evidence = [], demo = false }: { item: Recommendation; evidence?: Evidence[]; demo?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const color = kindColor[item.kind] || "var(--good)";
 
-  const itemEvidences = demoEvidence.filter((e) => item.evidenceIds.includes(e.id));
+  const itemEvidences = (demo ? demoEvidence : evidence).filter((e) => item.evidenceIds.includes(e.id));
 
   return (
     <article
@@ -61,7 +61,9 @@ export function DecisionCard({ item }: { item: Recommendation }) {
           <div className="score" style={{ color: item.score >= 85 ? "var(--good)" : "var(--warn)" }}>
             {item.score}
           </div>
-          <div className="muted" style={{ fontSize: 11, fontWeight: 600 }}>WAR SCORE</div>
+          <div className="muted" style={{ fontSize: 11, fontWeight: 600 }}>
+            {item.confidenceMeaning ? "HEURISTIC PRIORITY" : "WAR SCORE"}
+          </div>
         </div>
       </div>
 
@@ -90,12 +92,32 @@ export function DecisionCard({ item }: { item: Recommendation }) {
         </div>
       </div>
 
+      {item.kind === "add" && item.faabRange && (
+        <div style={{ padding: 12, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--line)", fontSize: 12.5 }}>
+          <strong>Estimated FAAB: {item.faabRange.minimumPercent.toFixed(1)}–{item.faabRange.maximumPercent.toFixed(1)}% of remaining balance</strong>
+          <div className="muted">Center estimate {item.faabRange.recommendedPercent.toFixed(1)}%; balance {item.faabRange.remainingBalance} last synced {new Date(item.faabRange.observedAt).toLocaleString()}.</div>
+          <div className="muted">Heuristic based on this add/drop edge and available alternatives. League bid history is unavailable.</div>
+        </div>
+      )}
+
+      {item.kind === "start" && item.teamMatchup && (
+        <div style={{ padding: 12, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--line)", fontSize: 12.5 }}>
+          <strong>Yahoo Week {item.teamMatchup.week} team matchup</strong>
+          <div>{item.teamMatchup.ownProjectedPoints.toFixed(1)} projected team points vs {item.teamMatchup.opponentProjectedPoints.toFixed(1)} for the opponent.</div>
+          <div className="muted">Yahoo scoreboard checked {new Date(item.teamMatchup.observedAt).toLocaleString()}. This team context is not an opponent adjustment to the player forecast.</div>
+        </div>
+      )}
+
       {/* Confidence & Evidence Footer */}
       <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, alignItems: "center" }}>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <ShieldCheck size={14} style={{ color: "var(--good)" }} />
-            <strong>{item.confidence}%</strong> confidence
+            {item.confidenceMeaning ? (
+              <span><strong>{item.confidence}/100</strong> evidence coverage estimate</span>
+            ) : (
+              <span><strong>{item.confidence}%</strong> confidence</span>
+            )}
           </span>
           <button
             type="button"
@@ -134,6 +156,43 @@ export function DecisionCard({ item }: { item: Recommendation }) {
             <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
               <Info size={13} /> Evidence Trail (Engine v0.1)
             </div>
+            {item.confidenceMeaning && (
+              <div className="muted">This coverage estimate is a heuristic, not a measured chance of success.</div>
+            )}
+            {item.projectedPoints && (
+              <div className="muted">Week forecast under imported league scoring: {item.projectedPoints.recommended.toFixed(1)} vs {item.projectedPoints.current.toFixed(1)} points.</div>
+            )}
+            {item.availability && (
+              <div className="muted">
+                {`Yahoo league availability checked ${new Date(item.availability.observedAt).toLocaleString()}.`}
+                {item.availability.truncated ? " Candidate scan was limited to the first 200 players." : ""}
+              </div>
+            )}
+            {item.forecastOutlook && (
+              <div style={{ display: "grid", gap: 8 }}>
+                <strong>Up to three weeks of source forecasts</strong>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+                  {item.forecastOutlook.requestedWeeks.map((week) => {
+                    const forecast = item.forecastOutlook?.weeks.find((row) => row.week === week);
+                    return <div key={week} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 8 }}>
+                      <strong>Week {week}</strong>
+                      {forecast ? (
+                        <>
+                          <div>{forecast.addPoints.toFixed(1)} vs {forecast.dropPoints.toFixed(1)} pts</div>
+                          <div className="muted">{forecast.edge >= 0 ? "+" : ""}{forecast.edge.toFixed(1)} point edge</div>
+                          {forecast.assumedZeroYahooStatIds.length > 0 && (
+                            <div className="muted">{forecast.assumedZeroYahooStatIds.length} missing stat projections treated as zero</div>
+                          )}
+                          <div className="muted">Checked {new Date(forecast.observedAt).toLocaleDateString()}</div>
+                          <a href={forecast.sourceUrl} target="_blank" rel="noopener noreferrer">Sleeper source</a>
+                        </>
+                      ) : <div className="muted">Forecast unavailable</div>}
+                    </div>;
+                  })}
+                </div>
+                <div className="muted">Forecast comparison only; it does not include opponent adjustments or a rest-of-season value claim.</div>
+              </div>
+            )}
             {itemEvidences.length > 0 ? (
               itemEvidences.map((ev) => (
                 <div key={ev.id} style={{ borderLeft: "2px solid var(--good)", paddingLeft: 8 }}>
@@ -142,7 +201,7 @@ export function DecisionCard({ item }: { item: Recommendation }) {
                 </div>
               ))
             ) : (
-              <div className="muted">Grounding: nflverse telemetry & Sleeper depth chart updates</div>
+              <div className="muted">Evidence details are unavailable for this recommendation. Check its source before acting.</div>
             )}
           </div>
         )}

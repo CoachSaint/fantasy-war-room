@@ -95,6 +95,19 @@ export interface Recommendation {
   alternativePlayerId?: string;
   score: number;
   confidence: number;
+  /** Present when the number describes evidence coverage rather than a calibrated outcome probability. */
+  confidenceMeaning?: "heuristic_source_coverage_not_outcome_probability";
+  projectedPoints?: { recommended: number; current: number };
+  teamMatchup?: { week: number; ownProjectedPoints: number; opponentProjectedPoints: number;
+    observedAt: string; status: string };
+  availability?: { sourceUrl: string; observedAt: string; truncated: boolean };
+  faabRange?: { version: string; minimumPercent: number; recommendedPercent: number; maximumPercent: number;
+    remainingBalance: number; observedAt: string; model: "heuristic_no_bid_history" };
+  forecastOutlook?: {
+    requestedWeeks: number[];
+    weeks: Array<{ week: number; addPoints: number; dropPoints: number; edge: number; observedAt: string;
+      sourceUrl: string; assumedZeroYahooStatIds: string[] }>;
+  };
   headline: string;
   reasonCodes: string[];
   evidenceIds: string[];

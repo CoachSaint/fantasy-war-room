@@ -17,7 +17,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci-local/common.sh
 
-require_node_major 20
+require_node_major 22
 assert_expected_sha
 
 echo "==> cloudbuild-pr.yaml config selftest (regression guard against \$-substitution collisions)"
@@ -37,15 +37,23 @@ fi
 
 echo "==> npm test (vitest run)"
 TMP_OUT="$(mktemp)"
-trap 'rm -f "$TMP_OUT"' EXIT
+TMP_OUT_PLAIN="$(mktemp)"
+trap 'rm -f "$TMP_OUT" "$TMP_OUT_PLAIN"' EXIT
 npm test 2>&1 | tee "$TMP_OUT"
 status=${PIPESTATUS[0]}
 
-TESTS_LINE="$(grep -E '^[[:space:]]*Tests[[:space:]]' "$TMP_OUT" | tail -1)"
-TEST_FILES_LINE="$(grep -E '^[[:space:]]*Test Files[[:space:]]' "$TMP_OUT" | tail -1)"
+# Vitest may prefix its summary with ANSI color codes in Cloud Build logs.
+# Strip those before parsing so a successful suite is not rejected as missing.
+perl -pe 's/\e\[[0-9;]*m//g' "$TMP_OUT" > "$TMP_OUT_PLAIN"
+TESTS_LINE="$(grep -E '^[[:space:]]*Tests[[:space:]]' "$TMP_OUT_PLAIN" | tail -1)"
+TEST_FILES_LINE="$(grep -E '^[[:space:]]*Test Files[[:space:]]' "$TMP_OUT_PLAIN" | tail -1)"
 
 if [ -z "$TESTS_LINE" ]; then
   echo "REFUSING: could not find a vitest 'Tests' summary line in the test output — a missing summary is not a pass" >&2
+  exit 1
+fi
+if [ -z "$TEST_FILES_LINE" ]; then
+  echo "REFUSING: could not find a vitest 'Test Files' summary line in the test output" >&2
   exit 1
 fi
 
@@ -77,6 +85,11 @@ fi
 
 if [ "$SKIPPED" -gt 0 ]; then
   echo "REFUSING: vitest reported ${SKIPPED} skipped test(s) — a skip is not a pass" >&2
+  exit 1
+fi
+
+if [ "$PASSED" -ne "$TOTAL" ]; then
+  echo "REFUSING: vitest reported ${PASSED}/${TOTAL} passed test(s) — every test must pass" >&2
   exit 1
 fi
 

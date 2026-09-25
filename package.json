@@ -15,7 +15,7 @@
     "@supabase/supabase-js": "latest",
     "lucide-react": "latest",
     "motion": "latest",
-    "next": "latest",
+    "next": "16.3.6",
     "react": "latest",
     "react-dom": "latest",
     "zod": "latest"
@@ -26,9 +26,9 @@
     "@types/react": "latest",
     "@types/react-dom": "latest",
     "eslint": "latest",
-    "eslint-config-next": "latest",
+    "eslint-config-next": "16.3.6",
     "tailwindcss": "latest",
     "typescript": "latest",
-    "vitest": "latest"
+    "vitest": "4.1.11"
   }
 }

@@ -3,6 +3,8 @@ import type { Position, RosterSlotType } from "@/lib/types";
 const YAHOO_FANTASY_BASE = "https://fantasysports.yahooapis.com/fantasy/v2";
 const MAX_LEAGUES = 10;
 const MAX_TEAMS_PER_LEAGUE = 32;
+const AVAILABLE_PAGE_SIZE = 50;
+const MAX_AVAILABLE_CANDIDATES = 200;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -45,6 +47,37 @@ export interface YahooLeagueImport {
   rosterSlots: YahooRosterSlot[];
   scoringModifiers: Record<string, number>;
   teams: YahooTeamRoster[];
+  matchups: YahooMatchup[];
+  draftStatus?: "predraft" | "drafting" | "postdraft" | "unknown";
+  draftHistoryStatus?: "ready" | "unavailable" | "not_started";
+  draftPicks?: YahooDraftPick[];
+}
+
+export interface YahooDraftPick {
+  overallPick: number;
+  round: number;
+  teamKey: string;
+  playerKey: string;
+  playerName?: string;
+  playerPosition?: Position;
+}
+
+export interface YahooMatchup {
+  week: number;
+  teamKeys: [string, string];
+  points: [number | null, number | null];
+  projectedPoints: [number | null, number | null];
+  status: string;
+  winnerTeamKey: string | null;
+  isTied: boolean;
+  isPlayoffs: boolean;
+}
+
+export interface YahooAvailablePool {
+  leagueKey: string;
+  players: YahooPlayer[];
+  observedAt: string;
+  truncated: boolean;
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -139,14 +172,14 @@ function normalizeRosterSlot(positionValue: string | undefined, countValue: numb
   return definition ? { ...definition, count } : null;
 }
 
-function normalizePlayer(node: unknown): YahooPlayer | null {
+function normalizePlayer(node: unknown, requireSelectedPosition = true): YahooPlayer | null {
   const playerKey = text(node, "player_key");
   if (!playerKey || !/^\d+\.p\.\d+$/.test(playerKey)) return null;
   const nameNode = findNamedNodes(node, "name")[0];
   const selectedNode = findNamedNodes(node, "selected_position")[0];
   const position = normalizePosition(text(node, "display_position"));
   const selectedPosition = text(selectedNode, "position");
-  if (!position || !selectedPosition) return null;
+  if (!position || (requireSelectedPosition && !selectedPosition)) return null;
   return {
     playerKey,
     playerId: text(node, "player_id") || playerKey,
@@ -158,12 +191,30 @@ function normalizePlayer(node: unknown): YahooPlayer | null {
   };
 }
 
+/** Yahoo's league `status=A` filter identifies acquisition candidates. */
+export function normalizeYahooAvailablePage(payload: unknown, leagueKey: string): YahooPlayer[] {
+  const collections = findNamedNodes(payload, "players");
+  if (!collections.length) throw new Error("yahoo_available_payload_invalid");
+  const raw = findNamedNodes(collections[0], "player");
+  if (raw.length > AVAILABLE_PAGE_SIZE) throw new Error("yahoo_available_payload_invalid");
+  const prefix = `${leagueKey.split(".")[0]}.p.`;
+  const players = raw.map((node) => normalizePlayer(node, false));
+  if (players.some((player) => !player || !player.playerKey.startsWith(prefix))) {
+    throw new Error("yahoo_available_payload_invalid");
+  }
+  const found = players as YahooPlayer[];
+  if (new Set(found.map((player) => player.playerKey)).size !== found.length) {
+    throw new Error("yahoo_available_payload_invalid");
+  }
+  return found;
+}
+
 function normalizeTeam(node: unknown): YahooTeamRoster | null {
   const teamKey = text(node, "team_key");
   if (!teamKey || !/^\d+\.l\.\d+\.t\.\d+$/.test(teamKey)) return null;
   const managerNode = findNamedNodes(node, "manager")[0];
   const players = findNamedNodes(node, "player")
-    .map(normalizePlayer)
+    .map((player) => normalizePlayer(player))
     .filter((player): player is YahooPlayer => player !== null);
   return {
     teamKey,
@@ -178,6 +229,44 @@ function normalizeTeam(node: unknown): YahooTeamRoster | null {
   };
 }
 
+export function normalizeYahooMatchups(payload: unknown, leagueKey: string, week: number, teamKeys: string[]): YahooMatchup[] {
+  const nodes = findNamedNodes(payload, "matchup");
+  if (!nodes.length || nodes.length > MAX_TEAMS_PER_LEAGUE / 2) throw new Error("yahoo_matchups_invalid");
+  if (teamKeys.some((key) => !key.startsWith(`${leagueKey}.t.`))) throw new Error("yahoo_matchups_invalid");
+  const knownTeams = new Set(teamKeys);
+  if (knownTeams.size !== teamKeys.length) throw new Error("yahoo_matchups_invalid");
+  const seenTeams = new Set<string>();
+  const matchups = nodes.map((node) => {
+    const matchupWeek = number(node, "week");
+    const teamNodes = findNamedNodes(node, "team");
+    if (matchupWeek !== week || teamNodes.length !== 2) throw new Error("yahoo_matchups_invalid");
+    const parsed = teamNodes.map((team) => ({
+      key: text(team, "team_key"),
+      points: number(findNamedNodes(team, "team_points")[0], "total") ?? null,
+      projected: number(findNamedNodes(team, "team_projected_points")[0], "total") ?? null,
+    })).sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    if (parsed[0].key === parsed[1].key || parsed.some((team) => !team.key || !knownTeams.has(team.key) || seenTeams.has(team.key))) {
+      throw new Error("yahoo_matchups_invalid");
+    }
+    const winnerTeamKey = text(node, "winner_team_key") ?? null;
+    if (winnerTeamKey && !parsed.some((team) => team.key === winnerTeamKey)) throw new Error("yahoo_matchups_invalid");
+    if (winnerTeamKey && truthy(node, "is_tied")) throw new Error("yahoo_matchups_invalid");
+    parsed.forEach((team) => seenTeams.add(team.key!));
+    return {
+      week,
+      teamKeys: [parsed[0].key!, parsed[1].key!] as [string, string],
+      points: [parsed[0].points, parsed[1].points] as [number | null, number | null],
+      projectedPoints: [parsed[0].projected, parsed[1].projected] as [number | null, number | null],
+      status: text(node, "status") ?? "unknown",
+      winnerTeamKey,
+      isTied: truthy(node, "is_tied"),
+      isPlayoffs: truthy(node, "is_playoffs"),
+    };
+  });
+  if (seenTeams.size !== knownTeams.size) throw new Error("yahoo_matchups_invalid");
+  return matchups;
+}
+
 export function normalizeYahooOwnedTeams(payload: unknown): YahooTeamRoster[] {
   const byKey = new Map<string, YahooTeamRoster>();
   for (const node of findNamedNodes(payload, "team")) {
@@ -187,10 +276,40 @@ export function normalizeYahooOwnedTeams(payload: unknown): YahooTeamRoster[] {
   return [...byKey.values()];
 }
 
+/** Read the authenticated team's ordered picks, never a guessed draft board. */
+export function normalizeYahooDraftResults(payload: unknown, teamKey: string): YahooDraftPick[] {
+  if (!/^\d+\.l\.\d+\.t\.\d+$/.test(teamKey)) throw new Error("yahoo_draft_team_invalid");
+  const collections = findNamedNodes(payload, "draft_results");
+  if (collections.length !== 1) throw new Error("yahoo_draft_payload_invalid");
+  const raw = findNamedNodes(collections[0], "draft_result");
+  if (raw.length > 40) throw new Error("yahoo_draft_payload_invalid");
+  const gamePrefix = `${teamKey.split(".")[0]}.p.`;
+  const seenPicks = new Set<number>();
+  const seenPlayers = new Set<string>();
+  const picks = raw.map((node) => {
+    const overallPick = number(node, "pick");
+    const round = number(node, "round");
+    const playerKey = text(node, "player_key");
+    const reportedTeamKey = text(node, "team_key");
+    if (!Number.isInteger(overallPick) || overallPick! < 1 || overallPick! > 1000 ||
+        !Number.isInteger(round) || round! < 1 || round! > 100 ||
+        !playerKey?.startsWith(gamePrefix) || !/^\d+\.p\.\d+$/.test(playerKey) ||
+        (reportedTeamKey && reportedTeamKey !== teamKey) ||
+        seenPicks.has(overallPick!) || seenPlayers.has(playerKey)) {
+      throw new Error("yahoo_draft_payload_invalid");
+    }
+    seenPicks.add(overallPick!);
+    seenPlayers.add(playerKey);
+    return { overallPick: overallPick!, round: round!, teamKey, playerKey };
+  });
+  return picks.sort((a, b) => a.overallPick - b.overallPick);
+}
+
 export function normalizeYahooLeagueImport(
   metadataPayload: unknown,
   settingsPayload: unknown,
   teamsPayload: unknown,
+  scoreboardPayload: unknown,
   rosterPayloads: Map<string, unknown>,
   ownedTeamKey: string
 ): YahooLeagueImport {
@@ -200,6 +319,9 @@ export function normalizeYahooLeagueImport(
   const name = text(leagueNode, "name");
   const season = number(leagueNode, "season");
   const currentWeek = number(leagueNode, "current_week");
+  const rawDraftStatus = text(leagueNode, "draft_status")?.toLowerCase();
+  const draftStatus = rawDraftStatus === "predraft" || rawDraftStatus === "drafting" || rawDraftStatus === "postdraft"
+    ? rawDraftStatus : "unknown";
   if (!leagueKey || !/^\d+\.l\.\d+$/.test(leagueKey) || leagueKey !== leagueKeyFromTeamKey(ownedTeamKey) || !leagueId || !name) {
     throw new Error("yahoo_payload_invalid");
   }
@@ -216,7 +338,7 @@ export function normalizeYahooLeagueImport(
     const roster = rosterPayloads.get(team.teamKey);
     if (!roster || findNamedNodes(roster, "players").length === 0) throw new Error("yahoo_payload_invalid");
     const rawPlayers = findNamedNodes(roster, "player");
-    const players = rawPlayers.map(normalizePlayer).filter((player): player is YahooPlayer => player !== null);
+    const players = rawPlayers.map((player) => normalizePlayer(player)).filter((player): player is YahooPlayer => player !== null);
     if (players.length !== rawPlayers.length) throw new Error("yahoo_payload_unsupported");
     return { ...team, players };
   });
@@ -227,7 +349,8 @@ export function normalizeYahooLeagueImport(
     .filter((slot): slot is YahooRosterSlot => slot !== null);
   if (!rosterSlots.length || rosterSlots.length !== rawRosterSlots.length) throw new Error("yahoo_payload_unsupported");
   const scoringModifiers: Record<string, number> = {};
-  const rawStats = findNamedNodes(settingsPayload, "stat");
+  const modifierNode = findNamedNodes(settingsPayload, "stat_modifiers")[0];
+  const rawStats = modifierNode ? findNamedNodes(modifierNode, "stat") : [];
   if (!rawStats.length) throw new Error("yahoo_payload_invalid");
   for (const stat of rawStats) {
     const statId = text(stat, "stat_id");
@@ -246,6 +369,10 @@ export function normalizeYahooLeagueImport(
     rosterSlots,
     scoringModifiers,
     teams: teams.slice(0, MAX_TEAMS_PER_LEAGUE),
+    matchups: normalizeYahooMatchups(scoreboardPayload, leagueKey, currentWeek!, teamKeys),
+    draftStatus,
+    draftHistoryStatus: draftStatus === "predraft" ? "not_started" : "unavailable",
+    draftPicks: [],
   };
 }
 
@@ -281,6 +408,28 @@ async function mapConcurrent<T, R>(items: T[], limit: number, mapper: (item: T) 
   return results;
 }
 
+/** Bounded top-candidate scan. Every returned player came from Yahoo's league available filter. */
+export async function getYahooAvailablePool(accessToken: string, leagueKey: string): Promise<YahooAvailablePool> {
+  if (!/^\d+\.l\.\d+$/.test(leagueKey)) throw new Error("yahoo_league_key_invalid");
+  const players: YahooPlayer[] = [];
+  const seen = new Set<string>();
+  for (let start = 0; start < MAX_AVAILABLE_CANDIDATES; start += AVAILABLE_PAGE_SIZE) {
+    const payload = await yahooFetch(accessToken,
+      `/league/${encodeURIComponent(leagueKey)}/players;status=A;sort=OR;start=${start};count=${AVAILABLE_PAGE_SIZE}`);
+    const page = normalizeYahooAvailablePage(payload, leagueKey);
+    if (start === 0 && page.length === 0) throw new Error("yahoo_available_pool_empty");
+    for (const player of page) {
+      if (seen.has(player.playerKey)) throw new Error("yahoo_available_pagination_invalid");
+      seen.add(player.playerKey);
+      players.push(player);
+    }
+    if (page.length < AVAILABLE_PAGE_SIZE) {
+      return { leagueKey, players, observedAt: new Date().toISOString(), truncated: false };
+    }
+  }
+  return { leagueKey, players, observedAt: new Date().toISOString(), truncated: true };
+}
+
 export async function getYahooLeagueImports(accessToken: string): Promise<YahooLeagueImport[]> {
   const discovery = await yahooFetch(accessToken, "/users;use_login=1/games;game_keys=nfl/teams");
   const ownedTeams = normalizeYahooOwnedTeams(discovery).slice(0, MAX_LEAGUES);
@@ -302,6 +451,7 @@ export async function getYahooLeagueImports(accessToken: string): Promise<YahooL
     ]);
     const leagueNode = findNamedNodes(metadata, "league")[0] ?? metadata;
     const week = Math.max(1, Math.min(23, number(leagueNode, "current_week") || 1));
+    const scoreboardPayload = await yahooFetch(accessToken, `/league/${encodeURIComponent(leagueKey)}/scoreboard;week=${week}`);
     const teamKeys = findNamedNodes(teamsPayload, "team")
       .map((node) => text(node, "team_key"))
       .filter((key): key is string => Boolean(key))
@@ -313,12 +463,32 @@ export async function getYahooLeagueImports(accessToken: string): Promise<YahooL
       teamKey,
       payload: await yahooFetch(accessToken, `/team/${encodeURIComponent(teamKey)}/roster;week=${week}/players`),
     }));
-    return normalizeYahooLeagueImport(
+    const imported = normalizeYahooLeagueImport(
       metadata,
       settings,
       teamsPayload,
+      scoreboardPayload,
       new Map(rosterResults.map((entry) => [entry.teamKey, entry.payload])),
       ownedTeam.teamKey
     );
+    if (imported.draftStatus === "postdraft" || imported.draftStatus === "drafting") {
+      try {
+        const history = await yahooFetch(accessToken,
+          `/team/${encodeURIComponent(ownedTeam.teamKey)}/draftresults`);
+        const picks = normalizeYahooDraftResults(history, ownedTeam.teamKey);
+        if (imported.draftStatus === "postdraft" && picks.length === 0) throw new Error("yahoo_draft_payload_invalid");
+        const playerByKey = new Map(imported.teams.flatMap((team) => team.players)
+          .map((player) => [player.playerKey, player]));
+        imported.draftPicks = picks.map((pick) => {
+          const player = playerByKey.get(pick.playerKey);
+          return player ? { ...pick, playerName: player.fullName, playerPosition: player.position } : pick;
+        });
+        imported.draftHistoryStatus = "ready";
+      } catch {
+        imported.draftHistoryStatus = "unavailable";
+        imported.draftPicks = [];
+      }
+    }
+    return imported;
   });
 }
