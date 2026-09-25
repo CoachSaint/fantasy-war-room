@@ -278,7 +278,8 @@ export function normalizeYahooLeagueImport(
     .filter((slot): slot is YahooRosterSlot => slot !== null);
   if (!rosterSlots.length || rosterSlots.length !== rawRosterSlots.length) throw new Error("yahoo_payload_unsupported");
   const scoringModifiers: Record<string, number> = {};
-  const rawStats = findNamedNodes(settingsPayload, "stat");
+  const modifierNode = findNamedNodes(settingsPayload, "stat_modifiers")[0];
+  const rawStats = modifierNode ? findNamedNodes(modifierNode, "stat") : [];
   if (!rawStats.length) throw new Error("yahoo_payload_invalid");
   for (const stat of rawStats) {
     const statId = text(stat, "stat_id");

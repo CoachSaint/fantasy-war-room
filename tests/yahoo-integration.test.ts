@@ -113,7 +113,8 @@ describe("Yahoo provider normalization", () => {
     const metadata = { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Family League" }, { season: "2026" }, { current_week: "4" }]] } };
     const settings = { fantasy_content: { league: [{ settings: [
       { roster_positions: { 0: { roster_position: [{ position: "QB" }, { count: 1 }] }, 1: { roster_position: [{ position: "W/R/T" }, { count: 2 }] }, 2: { roster_position: [{ position: "BN" }, { count: 6 }] } } },
-      { stat_modifiers: { stats: { 0: { stat: [{ stat_id: "4" }, { value: "4" }] }, 1: { stat: [{ stat_id: "10" }, { value: "0.5" }] } } } },
+      { stat_categories: { stats: { 0: { stat: [{ stat_id: "4" }, { name: "Passing Yards" }] }, 1: { stat: [{ stat_id: "11" }, { name: "Receptions" }] } } } },
+      { stat_modifiers: { stats: { 0: { stat: [{ stat_id: "4" }, { value: "0.04" }] }, 1: { stat: [{ stat_id: "11" }, { value: "0.5" }] } } } },
     ] }] } };
     const teams = { fantasy_content: { league: [{ teams: { 0: ownedTeam, 1: otherTeam } }] } };
     const matchup = [
@@ -133,7 +134,7 @@ describe("Yahoo provider normalization", () => {
 
     expect(imports).toMatchObject({ leagueKey: "449.l.123", season: 2026, currentWeek: 4, ownedTeamKey: "449.l.123.t.4" });
     expect(imports.rosterSlots.map((slot) => slot.slotType)).toEqual(["QB", "FLEX", "BENCH"]);
-    expect(imports.scoringModifiers).toEqual({ "4": 4, "10": 0.5 });
+    expect(imports.scoringModifiers).toEqual({ "4": 0.04, "11": 0.5 });
     expect(imports.teams).toHaveLength(2);
     expect(imports.teams[0].players[0]).toMatchObject({ playerKey: "449.p.1", fullName: "Starter One", selectedPosition: "QB" });
     expect(imports.teams[1].players[0]).toMatchObject({ playerKey: "449.p.2", selectedPosition: "BN" });
