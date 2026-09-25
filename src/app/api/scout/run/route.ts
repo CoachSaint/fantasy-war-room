@@ -9,6 +9,7 @@ import { materializeGlobalNflverse, materializeNflverseRosterPlayers, materializ
 import { materializeYahooLineupForLeague, YahooLineupError } from "@/lib/services/yahoo-lineup";
 import { materializeDailyBriefForLeague, DailyBriefError } from "@/lib/services/daily-brief";
 import { materializeYahooWaiversForLeague, YahooWaiverError } from "@/lib/services/yahoo-waivers";
+import { reconcileYahooOutcomesForLeague, YahooOutcomeError } from "@/lib/services/yahoo-outcomes";
 import { evaluateScoutCompletion } from "@/lib/services/scout-completion";
 
 export const dynamic = "force-dynamic";
@@ -345,6 +346,26 @@ async function handleScoutRun(request: Request) {
       failureCode ??= code;
       steps.push(step("waiver_scoring", "failed", waiverStart, 0, code));
       steps.push(step("waiver_materialization", "failed", waiverStart, 0, code));
+    }
+  }
+  const outcomeStart = Date.now();
+  if (!currentYahooLeagueIds.length) {
+    steps.push(step("outcome_reconciliation", "skipped", outcomeStart, 0, "current_yahoo_league_unavailable"));
+  } else {
+    try {
+      let recorded = 0;
+      let unavailable = 0;
+      for (const leagueId of currentYahooLeagueIds) {
+        const result = await reconcileYahooOutcomesForLeague(adminClient, leagueId);
+        recorded += result.recorded;
+        unavailable += result.unavailable;
+      }
+      steps.push(step("outcome_reconciliation", unavailable ? "skipped" : "success", outcomeStart,
+        recorded, unavailable ? `verified_actual_stats_unavailable:${unavailable}` : undefined));
+    } catch (error) {
+      const code = error instanceof YahooOutcomeError ? error.code : "outcome_reconciliation_failed";
+      failureCode ??= code;
+      steps.push(step("outcome_reconciliation", "failed", outcomeStart, 0, code));
     }
   }
   const diffStart = Date.now();

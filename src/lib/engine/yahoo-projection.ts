@@ -1,5 +1,3 @@
-import type { SleeperWeeklyProjection } from "@/lib/data/sleeper";
-
 const offenseStats: Record<string, string | string[]> = {
   "4": "pass_yd", "5": "pass_td", "6": "pass_int", "8": "rush_att",
   "9": "rush_yd", "10": "rush_td", "11": "rec", "12": "rec_yd",
@@ -20,7 +18,7 @@ export type YahooProjectionScore =
 
 /** Apply Yahoo's exact configured coefficients to available provider stat forecasts. */
 export function scoreYahooOffenseProjection(
-  projection: SleeperWeeklyProjection,
+  projection: { stats: Record<string, number> },
   modifiers: Record<string, unknown>,
 ): YahooProjectionScore {
   if (!Object.keys(projection.stats).length) return { ok: false, code: "projection_stats_unavailable", ids: [] };

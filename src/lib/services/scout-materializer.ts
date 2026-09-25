@@ -40,6 +40,7 @@ function fingerprint(snapshot: NflverseSnapshot): string {
     season: snapshot.season,
     week: snapshot.week,
     actualPoints: snapshot.actualPoints,
+    actualStats: snapshot.actualStats,
     projectedPoints: snapshot.projectedPoints,
     snapShare: snapshot.snapShare,
     targetShare: snapshot.targetShare,
@@ -165,6 +166,7 @@ export async function materializeGlobalNflverse(
       data: {
         providerPlayerId: snapshot.playerId,
         actualFantasyPoints: snapshot.actualPoints,
+        actualStats: snapshot.actualStats,
         projectedFantasyPoints: snapshot.projectedPoints,
         floor: snapshot.floor,
         ceiling: snapshot.ceiling,

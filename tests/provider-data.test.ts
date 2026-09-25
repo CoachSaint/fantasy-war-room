@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { parseSleeperSeasonProjections, parseSleeperWeeklyProjections, sleeper } from "../src/lib/data/sleeper";
+import { scoreYahooOffenseProjection } from "../src/lib/engine/yahoo-projection";
 import {
   nflverse,
   nflverseReleaseAssetUrl,
@@ -110,6 +111,22 @@ describe("nflverse release adapters", () => {
     expect(snapshots[1].floor).toBeUndefined();
     expect(snapshots[2].projectedPoints).toBeUndefined();
     expect(snapshots[2].floor).toBeUndefined();
+  });
+
+  it("retains raw nflverse game stats for exact league scoring without substituting PPR", () => {
+    const [game] = parsePlayerStats([{ player_id: "00-0023459", season: 2026, week: 1,
+      fantasy_points_ppr: 12.54, passing_yards: 221, passing_tds: 1,
+      passing_interceptions: 0, carries: 3, rushing_yards: -3, rushing_tds: 0,
+      receptions: 0, receiving_yards: 0, receiving_tds: 0, fumbles_lost_total: 0,
+    }], 2026, 1);
+    expect(game.actualStats).toMatchObject({ pass_yd: 221, pass_td: 1, pass_int: 0,
+      rush_att: 3, rush_yd: -3, rush_td: 0, rec: 0 });
+    expect(scoreYahooOffenseProjection({ stats: game.actualStats! }, {
+      "4": 0.04, "5": 4, "6": -1, "9": 0.1, "10": 6, "11": 1,
+      "12": 0.1, "13": 6, "18": -2,
+    })).toMatchObject({ ok: true, points: 12.54, assumedZeroStatIds: [] });
+    expect(scoreYahooOffenseProjection({ stats: game.actualStats! }, { "16": 2 }))
+      .toMatchObject({ ok: true, assumedZeroStatIds: ["16"] });
   });
 
   it("uses the newest published historical stats week without calling actuals projections", () => {

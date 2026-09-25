@@ -5,6 +5,7 @@ import { materializeYahooLineupForLeague } from "../src/lib/services/yahoo-lineu
 import { materializeDailyBriefForLeague } from "../src/lib/services/daily-brief";
 import { materializeYahooWaiversForLeague } from "../src/lib/services/yahoo-waivers";
 import { refreshYahooDecisionsAfterImport } from "../src/lib/services/yahoo-decision-refresh";
+import { reconcileYahooOutcomesForLeague } from "../src/lib/services/yahoo-outcomes";
 import { runYahooSync } from "../src/lib/integrations/yahoo-runner";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
@@ -204,13 +205,15 @@ describe("Yahoo lineup hosted database integration", () => {
         .update({ confidence: 99 }).eq("id", decisionHistory.data![0].id);
       expect(lockedDecision.error?.message).toContain("decision_event_facts_immutable");
       const predictionHistory = await client.from("prediction_events")
-        .select("id, prediction_type, target_season, target_week, predicted_mean")
+        .select("id, player_id, prediction_type, target_season, target_week, predicted_mean, pre_outcome_verified, feature_snapshot_id")
         .eq("league_id", leagueId).eq("user_id", userId);
       checked("read prediction history", predictionHistory.error);
       expect(predictionHistory.data).toHaveLength(8);
       expect(predictionHistory.data).toEqual(expect.arrayContaining([
         expect.objectContaining({ prediction_type: "weekly_points", target_season: 2026, target_week: 3 }),
       ]));
+      expect(predictionHistory.data?.every((row) => row.feature_snapshot_id &&
+        row.pre_outcome_verified === (row.player_id !== starterId))).toBe(true);
       const lockedPrediction = await client.from("prediction_events")
         .update({ predicted_mean: 999 }).eq("id", predictionHistory.data![0].id);
       expect(lockedPrediction.error?.message).toContain("prediction_event_facts_immutable");
@@ -261,8 +264,12 @@ describe("Yahoo lineup hosted database integration", () => {
       const ownerAccuracy = await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerAccuracy.status).toBe(200);
       expect(await ownerAccuracy.json()).toMatchObject({ decisionsRecorded: 4, predictionsRecorded: 8,
-        accuracyStatus: "awaiting_verified_outcomes" });
+        outcomesEvaluated: 0, mae: null, accuracyStatus: "awaiting_verified_outcomes" });
       expect((await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+      const directAccuracy = await fetch(`${url}/rest/v1/rpc/user_prediction_accuracy`, { method: "POST",
+        headers: { apikey: anonKey, authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ p_league_id: leagueId, p_user_id: outsiderId }) });
+      expect(directAccuracy.status).toBe(403);
       const forgedDecision = await fetch(`${url}/rest/v1/decision_events`, { method: "POST",
         headers: { apikey: anonKey, authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
         body: JSON.stringify({ user_id: userId, league_id: leagueId,
@@ -345,6 +352,61 @@ describe("Yahoo lineup hosted database integration", () => {
         { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(staleAddApi.status).toBe(200);
       expect(await staleAddApi.json()).toMatchObject({ data: [], count: 0, demo: false });
+
+      // The current week cannot be scored, even if a stats row is present.
+      expect(await reconcileYahooOutcomesForLeague(client, leagueId)).toMatchObject({
+        pending: 0, recorded: 0,
+      });
+      checked("advance disposable Yahoo week", (await client.from("leagues")
+        .update({ current_week: 4 }).eq("id", leagueId)).error);
+      const actualObservedAt = new Date().toISOString();
+      checked("insert postgame raw stats", (await client.from("player_snapshots").insert([
+        { player_id: starterId, season: 2026, week: 3, source: "nflverse_stats_player",
+          fingerprint: `${runId}-postgame-starter`, observed_at: actualObservedAt,
+          data: { actualFantasyPoints: 6, actualStats: { rush_yd: 60, rush_td: 0 } } },
+        { player_id: benchId, season: 2026, week: 3, source: "nflverse_stats_player",
+          fingerprint: `${runId}-postgame-bench`, observed_at: actualObservedAt,
+          data: { actualFantasyPoints: 8, actualStats: { rush_yd: 80, rush_td: 0 } } },
+        { player_id: availableId, season: 2026, week: 3, source: "nflverse_stats_player",
+          fingerprint: `${runId}-postgame-available`, observed_at: actualObservedAt,
+          data: { actualFantasyPoints: 18, actualStats: { rush_yd: 180, rush_td: 0 } } },
+      ])).error);
+      const reconciled = await reconcileYahooOutcomesForLeague(client, leagueId, new Date(Date.now() + 1000));
+      expect(reconciled).toMatchObject({ status: "complete", unavailable: 0 });
+      expect(reconciled.recorded).toBeGreaterThanOrEqual(6);
+      expect(await reconcileYahooOutcomesForLeague(client, leagueId)).toMatchObject({ pending: 0, recorded: 0 });
+      const scoredOutcomes = await client.from("prediction_outcomes")
+        .select("actual_fantasy_points, prediction_error, source_snapshot_id, scoring_engine_version")
+        .in("prediction_id", (await client.from("prediction_events").select("id").eq("league_id", leagueId)).data?.map((row) => row.id) || []);
+      checked("read scored outcomes", scoredOutcomes.error);
+      expect(scoredOutcomes.data).toHaveLength(reconciled.recorded);
+      expect(scoredOutcomes.data?.every((row) => row.source_snapshot_id && row.scoring_engine_version === "yahoo-actual-v1")).toBe(true);
+      const evaluated = await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
+      expect(evaluated.status).toBe(200);
+      const metrics = await evaluated.json();
+      // Starter already has an observed Week 3 stat row before the forecast,
+      // so only the three distinct pregame bench/available forecasts qualify.
+      // Their errors are -2, +3, -2; duplicate refreshes add no samples.
+      expect(metrics).toMatchObject({ outcomesEvaluated: 3,
+        mae: 2.333, rmse: 2.38, accuracyStatus: "measured_weekly_points" });
+      const beforeLate = await client.from("prediction_events").select("id")
+        .eq("league_id", leagueId).eq("pre_outcome_verified", false);
+      checked("read preexisting unverified forecasts", beforeLate.error);
+      checked("insert late recommendation", (await client.from("recommendations").insert({
+        league_id: leagueId, roster_id: rosterId, user_id: userId,
+        kind: "start", subject_player_id: benchId, alternative_player_id: starterId,
+        score: 70, confidence: 60, headline: "Late fixture forecast",
+        reason_codes: ["LATE_FIXTURE"], evidence_ids: [benchEvidenceId, starterEvidenceId],
+        engine_version: "war-v0.1-yahoo-lineup", computed_at: new Date().toISOString(),
+        fresh_until: new Date(Date.now() + 60_000).toISOString(),
+        payload: { targetSeason: 2026, targetWeek: 3,
+          projectedPoints: { recommended: 10, current: 5 } },
+      })).error);
+      const latePredictions = await client.from("prediction_events")
+        .select("pre_outcome_verified").eq("league_id", leagueId).eq("pre_outcome_verified", false);
+      checked("read late unverified forecasts", latePredictions.error);
+      expect(latePredictions.data).toHaveLength((beforeLate.data?.length || 0) + 2);
+      expect(await reconcileYahooOutcomesForLeague(client, leagueId)).toMatchObject({ pending: 0, recorded: 0 });
     } finally {
       if (previousCronSecret === undefined) delete process.env.CRON_SECRET;
       else process.env.CRON_SECRET = previousCronSecret;

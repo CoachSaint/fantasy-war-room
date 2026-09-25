@@ -23,6 +23,20 @@ export interface NflverseRawStat {
   route_share?: number | string;
   targets?: number | string;
   carries?: number | string;
+  passing_yards?: number | string;
+  passing_tds?: number | string;
+  passing_interceptions?: number | string;
+  rushing_yards?: number | string;
+  rushing_tds?: number | string;
+  receptions?: number | string;
+  receiving_yards?: number | string;
+  receiving_tds?: number | string;
+  special_teams_tds?: number | string;
+  passing_2pt_conversions?: number | string;
+  rushing_2pt_conversions?: number | string;
+  receiving_2pt_conversions?: number | string;
+  fumbles_lost_total?: number | string;
+  fumble_recovery_tds?: number | string;
 }
 
 export interface NflverseRawDepth {
@@ -66,6 +80,7 @@ export interface NflverseRawInjury {
 /** Metadata makes it impossible for callers to mistake actuals for projections. */
 export interface NflverseSnapshot extends PlayerSnapshot {
   actualPoints?: number;
+  actualStats?: Record<string, number>;
   projectionSource?: "projected" | "actual";
   fullName?: string;
   team?: string;
@@ -214,6 +229,18 @@ export function parsePlayerStats(
   return data.filter((row) => matchesSeasonWeek(row, season, week)).map((row, idx) => {
     const playerId = row.player_id || row.gsis_id || `nflv_player_${idx}`;
     const actualPoints = numberValue(row.fantasy_points_ppr ?? row.fantasy_points);
+    const actualStatFields = {
+      pass_yd: row.passing_yards, pass_td: row.passing_tds, pass_int: row.passing_interceptions,
+      rush_att: row.carries, rush_yd: row.rushing_yards, rush_td: row.rushing_tds,
+      rec: row.receptions, rec_yd: row.receiving_yards, rec_td: row.receiving_tds,
+      st_td: row.special_teams_tds, pass_2pt: row.passing_2pt_conversions,
+      rush_2pt: row.rushing_2pt_conversions, rec_2pt: row.receiving_2pt_conversions,
+      fum_lost: row.fumbles_lost_total, off_fum_rec_td: row.fumble_recovery_tds,
+    };
+    const actualStats = Object.fromEntries(Object.entries(actualStatFields).flatMap(([key, value]) => {
+      const parsed = numberValue(value);
+      return parsed == null ? [] : [[key, parsed]];
+    }));
     const projectedPoints = numberValue(row.projected_points_ppr ?? row.projected_points);
     const floor = projectedPoints == null ? undefined : Math.max(0, Number((projectedPoints * 0.65).toFixed(1)));
     const ceiling = projectedPoints == null ? undefined : Number((projectedPoints * 1.45).toFixed(1));
@@ -237,6 +264,7 @@ export function parsePlayerStats(
       matchupScore: undefined,
       observedAt: now,
       actualPoints,
+      ...(actualPoints == null ? {} : { actualStats }),
       projectionSource: projectedPoints == null ? (actualPoints == null ? undefined : "actual") : "projected",
     };
     return snapshot;
