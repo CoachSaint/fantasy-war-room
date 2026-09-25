@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { materializeYahooLineupForLeague } from "../src/lib/services/yahoo-lineup";
 import { materializeDailyBriefForLeague } from "../src/lib/services/daily-brief";
 import { materializeYahooWaiversForLeague } from "../src/lib/services/yahoo-waivers";
+import { refreshYahooDecisionsAfterImport } from "../src/lib/services/yahoo-decision-refresh";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
 
@@ -108,12 +109,8 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(firstWaivers).toMatchObject({ status: "complete", candidatesScored: 1, recommendationsInserted: 1 });
       const firstBrief = await materializeDailyBriefForLeague(client, leagueId, new Date(asOf.getTime() + 1500));
       expect(firstBrief).toMatchObject({ briefsWritten: 1, changesFound: 2, baselinesFound: 1 });
-      const second = await materializeYahooLineupForLeague(client, leagueId, new Date(asOf.getTime() + 2000));
-      expect(second).toMatchObject({ status: "complete", playersScored: 2, recommendationsInserted: 1 });
-      const secondWaivers = await materializeYahooWaiversForLeague(client, leagueId, new Date(asOf.getTime() + 2000));
-      expect(secondWaivers).toMatchObject({ status: "complete", candidatesScored: 1, recommendationsInserted: 1 });
-      const secondBrief = await materializeDailyBriefForLeague(client, leagueId, new Date(asOf.getTime() + 2500));
-      expect(secondBrief).toMatchObject({ briefsWritten: 1, changesFound: 0, baselinesFound: 1 });
+      const refreshed = await refreshYahooDecisionsAfterImport(client, [leagueId, leagueId], new Date(asOf.getTime() + 2000));
+      expect(refreshed).toEqual([{ leagueId, status: "evaluated", recommendationsWritten: 2, briefsWritten: 1 }]);
       const rows = await client.from("recommendations")
         .select("user_id, roster_id, subject_player_id, alternative_player_id, evidence_ids, payload")
         .eq("league_id", leagueId).eq("kind", "start");

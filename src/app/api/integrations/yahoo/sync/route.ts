@@ -8,6 +8,7 @@ import {
   yahooIntegrationConfigured,
 } from "@/lib/integrations/yahoo-oauth";
 import { persistYahooAvailablePool, persistYahooImports, YahooSyncError } from "@/lib/integrations/yahoo-sync";
+import { refreshYahooDecisionsAfterImport } from "@/lib/services/yahoo-decision-refresh";
 import { clientKey, consumeRateLimit, errorResponse, rateLimitResponse } from "@/lib/security/http";
 
 export const dynamic = "force-dynamic";
@@ -113,6 +114,9 @@ export async function POST(request: Request) {
             : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_available_sync_failed";
         }
       }
+      // A roster change invalidates prior lineup/waiver advice. Recompute from
+      // forecasts already ingested by Scout; report missing forecasts explicitly.
+      const decisions = await refreshYahooDecisionsAfterImport(auth.adminClient, summary.leagueIds);
       const finishedAt = new Date().toISOString();
       const connectionUpdate = await auth.adminClient.from("provider_connections").update({
         status: "connected",
@@ -135,7 +139,7 @@ export async function POST(request: Request) {
       return NextResponse.json({
         ok: !availabilityError, status: availabilityError ? "degraded" : "completed",
         ...(availabilityError ? { error: availabilityError } : {}),
-        data: { ...summary, availablePlayersProcessed, truncatedAvailabilityScans },
+        data: { ...summary, availablePlayersProcessed, truncatedAvailabilityScans, decisions },
       }, { status: availabilityError ? 503 : 200 });
     } catch (error) {
       const code = error instanceof YahooSyncError ? error.code : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_sync_failed";

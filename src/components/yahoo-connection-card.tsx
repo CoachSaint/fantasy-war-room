@@ -88,15 +88,28 @@ export function YahooConnectionCard() {
     try {
       const response = await fetch("/api/integrations/yahoo/sync", { method: "POST", credentials: "same-origin" });
       const body = await response.json() as Record<string, unknown>;
-      if (!response.ok) {
+      const data = body.data && typeof body.data === "object" ? body.data as Record<string, unknown> : {};
+      if (!response.ok && typeof data.leaguesProcessed !== "number") {
         const code = typeof body.error === "string" ? body.error : "yahoo_sync_failed";
         throw new Error(code === "yahoo_access_denied" ? "Yahoo access expired or was revoked. Reconnect the account." : `Yahoo import did not complete (${code}).`);
       }
-      const data = body.data && typeof body.data === "object" ? body.data as Record<string, unknown> : {};
       const leagues = typeof data.leaguesProcessed === "number" ? data.leaguesProcessed : 0;
       const rosters = typeof data.rostersProcessed === "number" ? data.rostersProcessed : 0;
-      setState((previous) => ({ ...previous, connected: true, message: `Yahoo import completed: ${leagues} league${leagues === 1 ? "" : "s"} and ${rosters} roster${rosters === 1 ? "" : "s"}.` }));
+      const decisions = Array.isArray(data.decisions) ? data.decisions as Record<string, unknown>[] : [];
+      const evaluated = decisions.filter((item) => item.status === "evaluated").length;
+      const waiting = decisions.filter((item) => item.status === "not_ready").length;
+      const projectionWaiting = decisions.filter((item) => item.status === "not_ready"
+        && typeof item.reason === "string" && item.reason.includes("projection")).length;
+      const failed = decisions.filter((item) => item.status === "failed").length;
+      const decisionMessage = failed ? ` Decision refresh failed for ${failed} league${failed === 1 ? "" : "s"}.`
+        : waiting ? projectionWaiting === waiting
+          ? ` ${waiting} league${waiting === 1 ? "" : "s"} still need current Scout projections before advice can appear.`
+          : ` ${waiting} league${waiting === 1 ? "" : "s"} still need current source data or league setup before advice can appear.`
+          : evaluated ? ` Current decisions checked for ${evaluated} league${evaluated === 1 ? "" : "s"}.` : "";
+      const availabilityMessage = !response.ok ? " Available-player import was incomplete; waiver advice is limited." : "";
       await loadStatus();
+      setState((previous) => ({ ...previous, connected: true,
+        message: `Yahoo import saved: ${leagues} league${leagues === 1 ? "" : "s"} and ${rosters} roster${rosters === 1 ? "" : "s"}.${availabilityMessage}${decisionMessage}` }));
     } catch (error) {
       setState((previous) => ({ ...previous, message: error instanceof Error ? error.message : "Yahoo import failed safely." }));
     } finally {
