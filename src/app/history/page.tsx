@@ -113,10 +113,10 @@ function DecisionResponseForm({ decision, leagueId, onSaved }: {
     <textarea id={`decision-note-${decision.id}`} value={response ? note : ""}
       onChange={(event) => setNote(event.target.value)} disabled={!response} maxLength={500} rows={2}
       style={{ borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface-strong)", color: "var(--text)", padding: 10 }} />
+    {message && <p role={saveError ? "alert" : "status"} style={{ margin: 0, fontSize: 12 }}>{message}</p>}
     <button type="submit" disabled={busy} style={{ justifySelf: "start", minHeight: 40, borderRadius: 999, border: 0,
       background: "var(--text)", color: "var(--bg)", fontWeight: 700, padding: "0 16px" }}>
       {busy ? "Saving…" : "Save response"}
     </button>
-    {message && <p role={saveError ? "alert" : "status"} style={{ margin: 0, fontSize: 12 }}>{message}</p>}
   </form>;
 }

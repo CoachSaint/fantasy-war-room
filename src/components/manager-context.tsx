@@ -9,7 +9,7 @@ type ContextState =
   | { status: "setup_required"; message?: string }
   | { status: "auth_required"; message?: string }
   | { status: "unavailable"; message?: string }
-  | { status: "ready"; context: Record<string, unknown> };
+  | { status: "ready"; context: Record<string, unknown>; memberships: Record<string, unknown>[]; selectableLeagueIds: string[] };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
@@ -21,6 +21,8 @@ function text(value: unknown): string | null {
 
 export function ManagerContext() {
   const [state, setState] = useState<ContextState>({ status: "loading" });
+  const [switching, setSwitching] = useState(false);
+  const [switchError, setSwitchError] = useState<string | null>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -39,12 +41,16 @@ export function ManagerContext() {
         } else {
           const data = isRecord(payload.data) ? payload.data : null;
           const memberships = data && Array.isArray(data.memberships) ? data.memberships : [];
-          const primary = selectPrimaryMembership(memberships);
+          const activeLeagueId = data ? text(data.activeLeagueId) : null;
+          const primary = selectPrimaryMembership(memberships, activeLeagueId);
           const context = isRecord(primary) ? primary : isRecord(payload.context) ? payload.context : null;
           if (!context) {
             setState({ status: "setup_required", message: "No league membership is available for this account." });
           } else {
-            setState({ status: "ready", context });
+            const selectableLeagueIds = data && Array.isArray(data.selectableLeagueIds)
+              ? data.selectableLeagueIds.filter((id): id is string => typeof id === "string") : [];
+            setState({ status: "ready", context,
+              memberships: memberships.filter(isRecord), selectableLeagueIds });
           }
         }
       } catch (error) {
@@ -79,9 +85,41 @@ export function ManagerContext() {
   const roster = isRecord(state.context.roster) ? state.context.roster : {};
   const leagueName = text(league.name) ?? text(league.leagueName);
   const rosterName = text(roster.name);
+  const activeLeagueId = text(league.id);
+  const options = state.memberships.flatMap((entry) => {
+    const optionLeague = isRecord(entry.league) ? entry.league : null;
+    const optionRoster = isRecord(entry.roster) ? entry.roster : null;
+    const id = optionLeague && text(optionLeague.id);
+    if (!id || !state.selectableLeagueIds.includes(id)) return [];
+    const name = text(optionLeague.name) ?? "Connected league";
+    const team = optionRoster && text(optionRoster.name);
+    return [{ id, label: team ? `${name} · ${team}` : name }];
+  });
+  const switchLeague = async (leagueId: string) => {
+    if (!leagueId || leagueId === activeLeagueId || switching) return;
+    setSwitching(true);
+    setSwitchError(null);
+    try {
+      const response = await fetch("/api/context", { method: "PATCH", credentials: "same-origin",
+        headers: { "Content-Type": "application/json" }, body: JSON.stringify({ leagueId }) });
+      if (!response.ok) throw new Error("League selection could not be saved. Please try again.");
+      window.location.reload();
+    } catch {
+      setSwitchError("League selection could not be saved. Please try again.");
+      setSwitching(false);
+    }
+  };
   return (
     <aside className="context-strip" aria-label="Active manager context">
-      <div><strong>{leagueName ?? "Connected league"}</strong><span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>{rosterName ? "Your roster: " + rosterName : "Roster name unavailable"}</span></div>
+      <div style={{ display: "grid", gap: 4, flex: "1 1 240px", minWidth: 0, maxWidth: "100%" }}>
+        <div><strong>{leagueName ?? "Connected league"}</strong><span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>{rosterName ? "Your roster: " + rosterName : "Roster name unavailable"}</span></div>
+        {options.length > 1 && activeLeagueId && <select aria-label="Active league and roster" value={activeLeagueId} disabled={switching}
+          onChange={(event) => void switchLeague(event.target.value)}
+          style={{ width: "100%", minWidth: 0, boxSizing: "border-box", minHeight: 36, borderRadius: 8, border: "1px solid var(--line)", background: "var(--surface-strong)", color: "var(--text)", padding: "0 8px" }}>
+          {options.map((option) => <option key={option.id} value={option.id}>{option.label}</option>)}
+        </select>}
+        {switchError && <span role="alert" style={{ color: "var(--bad)", fontSize: 12 }}>{switchError}</span>}
+      </div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
         <Link href="/history" style={{ color: "var(--good)", fontWeight: 700 }}>History</Link>
         <Link href="/accuracy" style={{ color: "var(--good)", fontWeight: 700 }}>Accuracy</Link>

@@ -25,9 +25,10 @@ export function useConnectedLeague(): LeagueState {
         if (!response.ok) return setState({ status: "unavailable" });
         const body: unknown = await response.json();
         if (!body || typeof body !== "object" || !("data" in body)) return setState({ status: "unavailable" });
-        const data = (body as { data?: { memberships?: unknown } }).data;
+        const data = (body as { data?: { memberships?: unknown; activeLeagueId?: unknown } }).data;
         const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
-        const primary = selectPrimaryMembership(memberships);
+        const selectedLeagueId = typeof data?.activeLeagueId === "string" ? data.activeLeagueId : null;
+        const primary = selectPrimaryMembership(memberships, selectedLeagueId);
         if (!primary?.league?.id) return setState({ status: "setup_required" });
         const scoring = primary.league.scoring;
         const modifiers = scoring && typeof scoring === "object" && !Array.isArray(scoring)

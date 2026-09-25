@@ -29,6 +29,7 @@ export async function GET(request: Request) {
     .select("id, league_id, name, player_ids, starter_ids, updated_at")
     .eq("id", membership.data.roster_id)
     .eq("league_id", leagueId)
+    .eq("owner_user_id", userId)
     .maybeSingle();
   if (roster.error) return errorResponse("roster_unavailable", 503);
   if (!roster.data) return errorResponse("roster_setup_required", 409);
