@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SleeperWeeklyProjection } from "@/lib/data/sleeper";
 import { scoreYahooOffenseProjection } from "@/lib/engine/yahoo-projection";
+import { ensureNflGameStarts } from "@/lib/services/nfl-game-starts";
 
 const engineVersion = "war-v0.1-yahoo-lineup";
 const blockedStatus = /\b(out|ir|doubtful|suspended|inactive)\b/i;
@@ -63,6 +64,7 @@ export async function materializeYahooLineupForLeague(
   }
   const season = Number(league.data.season);
   const week = Number(league.data.current_week);
+  await ensureNflGameStarts(client, season, week);
   const membership = await client.from("league_memberships")
     .select("user_id, roster_id")
     .eq("league_id", leagueId).not("roster_id", "is", null).limit(65);

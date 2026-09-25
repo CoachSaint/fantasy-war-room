@@ -46,6 +46,8 @@ describe("Yahoo lineup hosted database integration", () => {
     const benchEvidenceId = randomUUID();
     const availableEvidenceId = randomUUID();
     const asOf = new Date();
+    const fixtureLeagueKey = `390.l.${parseInt(runId.slice(0, 8), 16)}`;
+    const fixtureKickoff = new Date(asOf.getTime() + 10 * 60_000);
     let userId: string | null = null;
     let outsiderId: string | null = null;
     const scoutRunIds: string[] = [];
@@ -73,7 +75,7 @@ describe("Yahoo lineup hosted database integration", () => {
         id: workspaceId, name: "Disposable lineup fixture", created_by: userId,
       })).error);
       checked("insert league", (await client.from("leagues").insert({
-        id: leagueId, workspace_id: workspaceId, owner_id: userId, provider: "yahoo", provider_league_id: `fixture-${runId}`,
+        id: leagueId, workspace_id: workspaceId, owner_id: userId, provider: "yahoo", provider_league_id: fixtureLeagueKey,
         name: "Disposable lineup integration fixture", season: 2026, current_week: 3,
         scoring: { statModifiers: { "9": 0.1, "10": 6 } },
       })).error);
@@ -89,6 +91,10 @@ describe("Yahoo lineup hosted database integration", () => {
         team_a_projected_points: 110.5, team_b_projected_points: 99.25,
         status: "pre_event", observed_at: asOf.toISOString(),
       })).error);
+      checked("insert disposable game start", (await client.from("nfl_game_starts").insert({
+        season: 2026, week: 3, team: "ZZ", kickoff_at: fixtureKickoff.toISOString(),
+        observed_at: asOf.toISOString(), source: "nflverse_schedules",
+      })).error);
       checked("insert membership", (await client.from("league_memberships").insert({
         league_id: leagueId, user_id: userId, roster_id: rosterId,
       })).error);
@@ -101,13 +107,13 @@ describe("Yahoo lineup hosted database integration", () => {
       })).error);
       checked("insert fixture league sync marker", (await client.from("provider_league_links").insert({
         connection_id: connectionId, user_id: userId, provider: "yahoo",
-        provider_league_id: `fixture-${runId}`, provider_team_id: `fixture-${runId}`,
+        provider_league_id: fixtureLeagueKey, provider_team_id: `fixture-${runId}`,
         league_id: leagueId, roster_id: rosterId, last_synced_at: asOf.toISOString(),
       })).error);
       checked("insert players", (await client.from("players").insert([
-        { id: starterId, canonical_key: `fixture:${runId}:starter`, full_name: "Fixture Starter", position: "RB", status: "Active" },
-        { id: benchId, canonical_key: `fixture:${runId}:bench`, full_name: "Fixture Bench", position: "RB", status: "Active" },
-        { id: availableId, canonical_key: `fixture:${runId}:available`, full_name: "Fixture Available", position: "RB", status: "Active" },
+        { id: starterId, canonical_key: `fixture:${runId}:starter`, full_name: "Fixture Starter", team: "ZZ", position: "RB", status: "Active" },
+        { id: benchId, canonical_key: `fixture:${runId}:bench`, full_name: "Fixture Bench", team: "ZZ", position: "RB", status: "Active" },
+        { id: availableId, canonical_key: `fixture:${runId}:available`, full_name: "Fixture Available", team: "ZZ", position: "RB", status: "Active" },
       ])).error);
       checked("insert assignments", (await client.from("roster_assignments").insert([
         { league_id: leagueId, roster_id: rosterId, player_id: starterId, designation: "starter", provider_status: "Active" },
@@ -217,6 +223,25 @@ describe("Yahoo lineup hosted database integration", () => {
       const lockedPrediction = await client.from("prediction_events")
         .update({ predicted_mean: 999 }).eq("id", predictionHistory.data![0].id);
       expect(lockedPrediction.error?.message).toContain("prediction_event_facts_immutable");
+      const benchForecast = predictionHistory.data!.find((row) => row.player_id === benchId)!;
+      checked("simulate already-started game", (await client.from("nfl_game_starts")
+        .update({ kickoff_at: new Date(Date.now() - 60_000).toISOString() })
+        .eq("season", 2026).eq("week", 3).eq("team", "ZZ")).error);
+      const afterKickoff = await client.from("prediction_events").insert({
+        player_id: benchId, league_id: leagueId, user_id: userId,
+        prediction_type: "weekly_points", target_season: 2026, target_week: 3,
+        predicted_mean: 10, feature_snapshot_id: benchForecast.feature_snapshot_id,
+        engine_version: "war-v0.1-yahoo-lineup", evidence_cutoff_at: asOf.toISOString(),
+        pre_outcome_verified: true,
+        pre_outcome_proof: { source: "yahoo_scoreboard", status: "pre_event",
+          observedAt: asOf.toISOString() },
+      }).select("pre_outcome_verified, scoring_snapshot").single();
+      checked("insert after-kickoff forecast", afterKickoff.error);
+      expect(afterKickoff.data).toMatchObject({ pre_outcome_verified: false,
+        scoring_snapshot: { statModifiers: { "9": 0.1, "10": 6 } } });
+      checked("restore disposable future kickoff", (await client.from("nfl_game_starts")
+        .update({ kickoff_at: fixtureKickoff.toISOString() })
+        .eq("season", 2026).eq("week", 3).eq("team", "ZZ")).error);
       const briefs = await client.from("daily_briefs").select("payload").eq("league_id", leagueId)
         .order("computed_at", { ascending: false }).limit(1);
       checked("read daily brief", briefs.error);
@@ -263,7 +288,7 @@ describe("Yahoo lineup hosted database integration", () => {
       const accuracyUrl = `http://localhost:3000/api/accuracy?leagueId=${leagueId}`;
       const ownerAccuracy = await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerAccuracy.status).toBe(200);
-      expect(await ownerAccuracy.json()).toMatchObject({ decisionsRecorded: 4, predictionsRecorded: 8,
+      expect(await ownerAccuracy.json()).toMatchObject({ decisionsRecorded: 4, predictionsRecorded: 9,
         outcomesEvaluated: 0, mae: null, accuracyStatus: "awaiting_verified_outcomes" });
       expect((await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
       const directAccuracy = await fetch(`${url}/rest/v1/rpc/user_prediction_accuracy`, { method: "POST",
@@ -358,8 +383,9 @@ describe("Yahoo lineup hosted database integration", () => {
         pending: 0, recorded: 0,
       });
       checked("advance disposable Yahoo week", (await client.from("leagues")
-        .update({ current_week: 4 }).eq("id", leagueId)).error);
-      const actualObservedAt = new Date().toISOString();
+        .update({ current_week: 4, scoring: { statModifiers: { "9": 0.2, "10": 6 } } })
+        .eq("id", leagueId)).error);
+      const actualObservedAt = new Date(fixtureKickoff.getTime() + 60_000).toISOString();
       checked("insert postgame raw stats", (await client.from("player_snapshots").insert([
         { player_id: starterId, season: 2026, week: 3, source: "nflverse_stats_player",
           fingerprint: `${runId}-postgame-starter`, observed_at: actualObservedAt,
@@ -371,7 +397,7 @@ describe("Yahoo lineup hosted database integration", () => {
           fingerprint: `${runId}-postgame-available`, observed_at: actualObservedAt,
           data: { actualFantasyPoints: 18, actualStats: { rush_yd: 180, rush_td: 0 } } },
       ])).error);
-      const reconciled = await reconcileYahooOutcomesForLeague(client, leagueId, new Date(Date.now() + 1000));
+      const reconciled = await reconcileYahooOutcomesForLeague(client, leagueId, new Date(fixtureKickoff.getTime() + 120_000));
       expect(reconciled).toMatchObject({ status: "complete", unavailable: 0 });
       expect(reconciled.recorded).toBeGreaterThanOrEqual(6);
       expect(await reconcileYahooOutcomesForLeague(client, leagueId)).toMatchObject({ pending: 0, recorded: 0 });
@@ -422,6 +448,8 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("cleanup league sync marker", (await client.from("provider_league_links").delete().eq("connection_id", connectionId)).error);
       checked("cleanup fixture connection", (await client.from("provider_connections").delete().eq("id", connectionId)).error);
       checked("cleanup Yahoo matchup fixture", (await client.from("league_week_matchups").delete().eq("league_id", leagueId)).error);
+      checked("cleanup disposable game start", (await client.from("nfl_game_starts").delete()
+        .eq("season", 2026).eq("week", 3).eq("team", "ZZ")).error);
       checked("cleanup roster", (await client.from("rosters").delete().eq("league_id", leagueId)).error);
       checked("cleanup league", (await client.from("leagues").delete().eq("id", leagueId)).error);
       checked("cleanup snapshots", (await client.from("player_snapshots").delete().in("player_id", [starterId, benchId, availableId])).error);

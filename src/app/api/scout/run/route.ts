@@ -11,6 +11,7 @@ import { materializeDailyBriefForLeague, DailyBriefError } from "@/lib/services/
 import { materializeYahooWaiversForLeague, YahooWaiverError } from "@/lib/services/yahoo-waivers";
 import { reconcileYahooOutcomesForLeague, YahooOutcomeError } from "@/lib/services/yahoo-outcomes";
 import { evaluateScoutCompletion } from "@/lib/services/scout-completion";
+import { withYahooLeagueLeases, YahooLeagueLeaseError } from "@/lib/integrations/yahoo-league-lease";
 
 export const dynamic = "force-dynamic";
 
@@ -248,13 +249,20 @@ async function handleScoutRun(request: Request) {
   const syncStart = Date.now();
   let recommendationsMaterialized = 0;
   const currentYahooLeagueIds: string[] = [];
+  const yahooLeagueKeys = new Map<string, string>();
+  const withLeagueLease = <T>(leagueId: string, work: () => Promise<T>) => {
+    const key = yahooLeagueKeys.get(leagueId);
+    if (!key || !runId) throw new YahooLeagueLeaseError("yahoo_league_key_unavailable");
+    return withYahooLeagueLeases(adminClient, [key], runId, work);
+  };
   try {
-    const leagueRows = await adminClient.from("leagues").select("id")
+    const leagueRows = await adminClient.from("leagues").select("id, provider_league_id")
       .eq("provider", "yahoo").eq("season", input.season).eq("current_week", input.week)
       .limit(201);
     if (leagueRows.error) throw new YahooLineupError("yahoo_league_lookup_failed");
     if ((leagueRows.data || []).length > 200) throw new YahooLineupError("yahoo_league_limit_exceeded");
     currentYahooLeagueIds.push(...(leagueRows.data || []).map((row) => String(row.id)));
+    for (const league of leagueRows.data || []) yahooLeagueKeys.set(String(league.id), String(league.provider_league_id));
     if (!leagueRows.data?.length) {
       steps.push(step("league_roster_freshness", "skipped", syncStart, 0, "current_yahoo_league_unavailable"));
       steps.push(step("feature_scoring", "skipped", scoringStart, 0, "current_yahoo_league_unavailable"));
@@ -285,7 +293,7 @@ async function handleScoutRun(request: Request) {
       let scoredLeagues = 0;
       const skippedReasons: string[] = [];
       for (const league of leagueRows.data) {
-        const result = await materializeYahooLineupForLeague(adminClient, String(league.id));
+        const result = await withLeagueLease(String(league.id), () => materializeYahooLineupForLeague(adminClient, String(league.id)));
         if (result.status === "skipped") {
           skippedReasons.push(result.reason || "league_context_unavailable");
           continue;
@@ -304,7 +312,8 @@ async function handleScoutRun(request: Request) {
         recommendationsMaterialized, allCompleted ? undefined : skippedReason || "league_context_unavailable"));
     }
   } catch (error) {
-    const code = error instanceof YahooLineupError ? error.code : "lineup_materialization_failed";
+    const code = error instanceof YahooLineupError || error instanceof YahooLeagueLeaseError
+      ? error.code : "lineup_materialization_failed";
     failureCode ??= code;
     if (!steps.some((entry) => entry.name === "league_roster_freshness")) {
       steps.push(step("league_roster_freshness", "failed", syncStart, 0, code));
@@ -324,7 +333,7 @@ async function handleScoutRun(request: Request) {
       let waiversInserted = 0;
       const skippedReasons: string[] = [];
       for (const leagueId of currentYahooLeagueIds) {
-        const result = await materializeYahooWaiversForLeague(adminClient, leagueId);
+        const result = await withLeagueLease(leagueId, () => materializeYahooWaiversForLeague(adminClient, leagueId));
         if (result.status === "skipped") {
           skippedReasons.push(result.reason || "waiver_context_unavailable");
           continue;
@@ -342,7 +351,8 @@ async function handleScoutRun(request: Request) {
       steps.push(step("waiver_materialization", allCompleted ? "success" : "skipped", waiverStart,
         waiversInserted, allCompleted ? undefined : skippedReasons[0] || "waiver_context_unavailable"));
     } catch (error) {
-      const code = error instanceof YahooWaiverError ? error.code : "waiver_materialization_failed";
+      const code = error instanceof YahooWaiverError || error instanceof YahooLeagueLeaseError
+        ? error.code : "waiver_materialization_failed";
       failureCode ??= code;
       steps.push(step("waiver_scoring", "failed", waiverStart, 0, code));
       steps.push(step("waiver_materialization", "failed", waiverStart, 0, code));
@@ -356,14 +366,15 @@ async function handleScoutRun(request: Request) {
       let recorded = 0;
       let unavailable = 0;
       for (const leagueId of currentYahooLeagueIds) {
-        const result = await reconcileYahooOutcomesForLeague(adminClient, leagueId);
+        const result = await withLeagueLease(leagueId, () => reconcileYahooOutcomesForLeague(adminClient, leagueId));
         recorded += result.recorded;
         unavailable += result.unavailable;
       }
       steps.push(step("outcome_reconciliation", unavailable ? "skipped" : "success", outcomeStart,
         recorded, unavailable ? `verified_actual_stats_unavailable:${unavailable}` : undefined));
     } catch (error) {
-      const code = error instanceof YahooOutcomeError ? error.code : "outcome_reconciliation_failed";
+      const code = error instanceof YahooOutcomeError || error instanceof YahooLeagueLeaseError
+        ? error.code : "outcome_reconciliation_failed";
       failureCode ??= code;
       steps.push(step("outcome_reconciliation", "failed", outcomeStart, 0, code));
     }
@@ -402,7 +413,7 @@ async function handleScoutRun(request: Request) {
       let completedLeagues = 0;
       const briefAsOf = new Date();
       for (const leagueId of currentYahooLeagueIds) {
-        const result = await materializeDailyBriefForLeague(adminClient, leagueId, briefAsOf);
+        const result = await withLeagueLease(leagueId, () => materializeDailyBriefForLeague(adminClient, leagueId, briefAsOf));
         dailyBriefsWritten += result.briefsWritten;
         if (result.briefsWritten) completedLeagues += 1;
         changesFound += result.changesFound;
@@ -414,7 +425,8 @@ async function handleScoutRun(request: Request) {
       steps.push(step("daily_brief_materialization", allCompleted ? "success" : "skipped", diffStart,
         dailyBriefsWritten, allCompleted ? undefined : "league_membership_unavailable"));
     } catch (error) {
-      const code = error instanceof DailyBriefError ? error.code : "daily_brief_failed";
+      const code = error instanceof DailyBriefError || error instanceof YahooLeagueLeaseError
+        ? error.code : "daily_brief_failed";
       failureCode ??= code;
       steps.push(step("recommendation_diff", "failed", diffStart, 0, code));
       steps.push(step("daily_brief_materialization", "failed", diffStart, dailyBriefsWritten, code));

@@ -2,6 +2,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SleeperWeeklyProjection } from "@/lib/data/sleeper";
 import { scoreYahooOffenseProjection } from "@/lib/engine/yahoo-projection";
 import { calculateWaiverBidRange } from "@/lib/services/waiver-bid";
+import { ensureNflGameStarts } from "@/lib/services/nfl-game-starts";
 
 const engineVersion = "war-v0.1-yahoo-waiver";
 const blockedStatus = /\b(out|ir|doubtful|suspended|inactive)\b/i;
@@ -54,6 +55,7 @@ export async function materializeYahooWaiversForLeague(
   if (!scoring?.statModifiers || typeof scoring.statModifiers !== "object") return skipped("scoring_rules_unavailable");
   const season = Number(league.data.season);
   const week = Number(league.data.current_week);
+  await ensureNflGameStarts(client, season, week);
   const forecastWeeks = Array.from({ length: 1 + Math.max(0, Math.min(18, week + 2) - week) },
     (_, offset) => week + offset);
   const scan = await client.from("league_available_scans")

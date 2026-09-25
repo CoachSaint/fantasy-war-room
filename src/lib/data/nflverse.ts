@@ -88,6 +88,7 @@ export interface NflverseSnapshot extends PlayerSnapshot {
 }
 
 export interface NflverseAdapter {
+  getWeeklyGameStarts(input: { season: number; week: number }): Promise<NflverseGameStart[]>;
   getPlayerSnapshots(input: { season: number; week: number }): Promise<NflverseSnapshot[]>;
   getLatestAvailablePlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; snapshots: NflverseSnapshot[] }>;
   getRecentPlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; weeks: number[]; snapshots: NflverseSnapshot[] }>;
@@ -99,6 +100,31 @@ export interface NflverseAdapter {
 }
 
 const DEFAULT_RELEASE_BASE = "https://github.com/nflverse/nflverse-data/releases/download";
+
+export interface NflverseGameStart { season: number; week: number; team: string; kickoffAt: string }
+
+export function parseGameStarts(data: Record<string, string>[], season: number, week: number): NflverseGameStart[] {
+  const starts: NflverseGameStart[] = [];
+  const teams = new Set<string>();
+  for (const row of data) {
+    if (Number(row.season) !== season || Number(row.week) !== week || row.game_type !== "REG") continue;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(row.gameday || "") || !/^\d{2}:\d{2}$/.test(row.gametime || "")) return [];
+    const noonUtc = new Date(`${row.gameday}T12:00:00Z`);
+    if (Number.isNaN(noonUtc.getTime())) return [];
+    const zone = new Intl.DateTimeFormat("en-US", { timeZone: "America/New_York", timeZoneName: "shortOffset" })
+      .formatToParts(noonUtc).find((part) => part.type === "timeZoneName")?.value;
+    const offset = /^GMT-(4|5)$/.exec(zone || "");
+    if (!offset) return [];
+    const kickoff = new Date(`${row.gameday}T${row.gametime}:00-${String(offset[1]).padStart(2, "0")}:00`);
+    if (Number.isNaN(kickoff.getTime())) return [];
+    for (const team of [row.home_team, row.away_team]) {
+      if (!/^[A-Z]{2,3}$/.test(team || "") || teams.has(team)) return [];
+      teams.add(team);
+      starts.push({ season, week, team, kickoffAt: kickoff.toISOString() });
+    }
+  }
+  return starts.length >= 2 && starts.length <= 32 ? starts : [];
+}
 
 /**
  * Build an official release-asset URL. The base is configurable for mirrors and
@@ -470,6 +496,15 @@ export const nflverse: NflverseAdapter = {
   parsePlayerStats,
   parseDepthCharts,
   parseInjuryReport,
+
+  async getWeeklyGameStarts({ season, week }: { season: number; week: number }) {
+    try {
+      const raw = await readReleaseAsset(nflverseReleaseAssetUrl("schedules", "games.csv"));
+      return parseGameStarts(raw as Record<string, string>[], season, week);
+    } catch {
+      return [];
+    }
+  },
 
   async getPlayerSnapshots({ season, week }: { season: number; week: number }) {
     const url = nflverseReleaseAssetUrl("stats_player", `stats_player_week_${season}.csv`);

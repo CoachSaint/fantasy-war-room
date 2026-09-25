@@ -9,6 +9,7 @@ import {
   parsePlayerStats,
   parseLatestAvailablePlayerStats,
   parseRecentPlayerStats,
+  parseGameStarts,
   parseYahooCrosswalk,
 } from "../src/lib/data/nflverse";
 
@@ -88,6 +89,19 @@ describe("provider identity and availability", () => {
 });
 
 describe("nflverse release adapters", () => {
+  it("maps the published Eastern game time to UTC and refuses duplicate teams", () => {
+    const rows = [
+      { season: "2026", week: "3", game_type: "REG", gameday: "2026-09-24", gametime: "20:15", home_team: "GB", away_team: "ATL" },
+      { season: "2026", week: "3", game_type: "REG", gameday: "2026-09-27", gametime: "13:00", home_team: "BUF", away_team: "LAC" },
+    ];
+    expect(parseGameStarts(rows, 2026, 3)).toEqual([
+      { season: 2026, week: 3, team: "GB", kickoffAt: "2026-09-25T00:15:00.000Z" },
+      { season: 2026, week: 3, team: "ATL", kickoffAt: "2026-09-25T00:15:00.000Z" },
+      { season: 2026, week: 3, team: "BUF", kickoffAt: "2026-09-27T17:00:00.000Z" },
+      { season: 2026, week: 3, team: "LAC", kickoffAt: "2026-09-27T17:00:00.000Z" },
+    ]);
+    expect(parseGameStarts([...rows, rows[0]], 2026, 3)).toEqual([]);
+  });
   it("uses release assets rather than the obsolete master tree", () => {
     expect(nflverseReleaseAssetUrl("stats_player", "stats_player_week_2026.csv")).toBe(
       "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2026.csv"
