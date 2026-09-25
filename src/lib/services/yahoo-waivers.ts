@@ -251,8 +251,9 @@ export async function materializeYahooWaiversForLeague(
     if (written.error) throw new YahooWaiverError("waiver_recommendations_write_failed");
     inserted = written.data?.length || 0;
   }
-  const old = await client.from("recommendations").delete().eq("league_id", leagueId)
-    .eq("engine_version", engineVersion).lt("computed_at", asOf.toISOString());
+  const old = await client.from("recommendations").update({ fresh_until: asOf.toISOString() })
+    .eq("league_id", leagueId).eq("engine_version", engineVersion)
+    .lt("computed_at", asOf.toISOString()).gt("fresh_until", asOf.toISOString());
   if (old.error) throw new YahooWaiverError("waiver_recommendations_cleanup_failed");
   return { leagueId, status: "complete", candidatesScored: candidates.filter((row) => scored.has(String(row.player_id))).length,
     recommendationsInserted: inserted };

@@ -8,6 +8,8 @@ import { refreshYahooDecisionsAfterImport } from "../src/lib/services/yahoo-deci
 import { runYahooSync } from "../src/lib/integrations/yahoo-runner";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
+import { GET as getHistory } from "../src/app/api/history/route";
+import { GET as getAccuracy } from "../src/app/api/accuracy/route";
 import { GET as getPlayers } from "../src/app/api/players/route";
 import { POST as askCoach } from "../src/app/api/coach/chat/route";
 import { GET as runScout } from "../src/app/api/scout/run/route";
@@ -20,7 +22,7 @@ function checked(label: string, error: { message: string } | null): void {
 }
 
 describe("Yahoo lineup hosted database integration", () => {
-  it.skipIf(!live)("writes one owner-scoped source-backed swap and replaces it on rerun", async () => {
+  it.skipIf(!live)("writes owner-scoped source-backed swaps and retains their history on rerun", async () => {
     const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
     const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
     const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
@@ -161,7 +163,8 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(refreshed).toEqual([{ leagueId, status: "evaluated", recommendationsWritten: 2, briefsWritten: 1 }]);
       const rows = await client.from("recommendations")
         .select("user_id, roster_id, subject_player_id, alternative_player_id, evidence_ids, payload")
-        .eq("league_id", leagueId).eq("kind", "start");
+        .eq("league_id", leagueId).eq("kind", "start")
+        .gt("fresh_until", new Date(asOf.getTime() + 2000).toISOString());
       checked("read recommendations", rows.error);
       expect(rows.data).toHaveLength(1);
       expect(rows.data?.[0]).toMatchObject({
@@ -171,7 +174,8 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(rows.data?.[0]?.evidence_ids).toEqual([benchEvidenceId, starterEvidenceId]);
       const waiverRows = await client.from("recommendations")
         .select("subject_player_id, alternative_player_id, evidence_ids, payload")
-        .eq("league_id", leagueId).eq("kind", "add");
+        .eq("league_id", leagueId).eq("kind", "add")
+        .gt("fresh_until", new Date(asOf.getTime() + 2000).toISOString());
       checked("read waiver recommendations", waiverRows.error);
       expect(waiverRows.data).toHaveLength(1);
       expect(waiverRows.data?.[0]).toMatchObject({ subject_player_id: availableId, alternative_player_id: benchId,
@@ -185,6 +189,31 @@ describe("Yahoo lineup hosted database integration", () => {
             { week: 5, addPoints: 12, dropPoints: 9, edge: 3 },
           ],
         } });
+      const decisionHistory = await client.from("decision_events")
+        .select("id, recommendation_id, recommendation_snapshot, response")
+        .eq("league_id", leagueId).eq("user_id", userId);
+      checked("read immutable decision history", decisionHistory.error);
+      expect(decisionHistory.data).toHaveLength(4);
+      expect(decisionHistory.data).toEqual(expect.arrayContaining([
+        expect.objectContaining({ response: null,
+          recommendation_snapshot: expect.objectContaining({ kind: "start", headline: expect.stringContaining("Fixture Bench") }) }),
+        expect.objectContaining({ response: null,
+          recommendation_snapshot: expect.objectContaining({ kind: "add", headline: expect.stringContaining("Fixture Available") }) }),
+      ]));
+      const lockedDecision = await client.from("decision_events")
+        .update({ confidence: 99 }).eq("id", decisionHistory.data![0].id);
+      expect(lockedDecision.error?.message).toContain("decision_event_facts_immutable");
+      const predictionHistory = await client.from("prediction_events")
+        .select("id, prediction_type, target_season, target_week, predicted_mean")
+        .eq("league_id", leagueId).eq("user_id", userId);
+      checked("read prediction history", predictionHistory.error);
+      expect(predictionHistory.data).toHaveLength(8);
+      expect(predictionHistory.data).toEqual(expect.arrayContaining([
+        expect.objectContaining({ prediction_type: "weekly_points", target_season: 2026, target_week: 3 }),
+      ]));
+      const lockedPrediction = await client.from("prediction_events")
+        .update({ predicted_mean: 999 }).eq("id", predictionHistory.data![0].id);
+      expect(lockedPrediction.error?.message).toContain("prediction_event_facts_immutable");
       const briefs = await client.from("daily_briefs").select("payload").eq("league_id", leagueId)
         .order("computed_at", { ascending: false }).limit(1);
       checked("read daily brief", briefs.error);
@@ -220,6 +249,26 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 },
         teamMatchup: { week: 3, ownProjectedPoints: 110.5, opponentProjectedPoints: 99.25, status: "pre_event" } }] });
       expect((await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+      const historyUrl = `http://localhost:3000/api/history?leagueId=${leagueId}`;
+      const ownerHistory = await getHistory(new Request(historyUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
+      expect(ownerHistory.status).toBe(200);
+      expect(await ownerHistory.json()).toMatchObject({ count: 4, data: expect.arrayContaining([
+        expect.objectContaining({ recommendation_snapshot: expect.objectContaining({ kind: "start" }) }),
+      ]) });
+      expect((await getHistory(new Request(historyUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+      expect((await getHistory(new Request(historyUrl))).status).toBe(401);
+      const accuracyUrl = `http://localhost:3000/api/accuracy?leagueId=${leagueId}`;
+      const ownerAccuracy = await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
+      expect(ownerAccuracy.status).toBe(200);
+      expect(await ownerAccuracy.json()).toMatchObject({ decisionsRecorded: 4, predictionsRecorded: 8,
+        accuracyStatus: "awaiting_verified_outcomes" });
+      expect((await getAccuracy(new Request(accuracyUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+      const forgedDecision = await fetch(`${url}/rest/v1/decision_events`, { method: "POST",
+        headers: { apikey: anonKey, authorization: `Bearer ${ownerToken}`, "content-type": "application/json" },
+        body: JSON.stringify({ user_id: userId, league_id: leagueId,
+          recommendation_id: decisionHistory.data![0].recommendation_id, confidence: 99,
+          recommended_at: asOf.toISOString() }) });
+      expect(forgedDecision.status).toBe(403);
       const playerUrl = `http://localhost:3000/api/players?leagueId=${leagueId}&playerId=${starterId}`;
       const ownerPlayer = await getPlayers(new Request(playerUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerPlayer.status).toBe(200);
@@ -290,7 +339,8 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(staleWaivers).toMatchObject({ status: "skipped", reason: "yahoo_availability_scan_stale", recommendationsInserted: 0 });
       const expiredWaivers = await client.from("recommendations").select("fresh_until").eq("league_id", leagueId).eq("kind", "add");
       checked("read expired waiver", expiredWaivers.error);
-      expect(new Date(String(expiredWaivers.data?.[0]?.fresh_until)).getTime()).toBeLessThanOrEqual(asOf.getTime() + 3000);
+      expect(expiredWaivers.data?.length).toBeGreaterThanOrEqual(2);
+      expect(expiredWaivers.data?.every((row) => new Date(String(row.fresh_until)).getTime() <= asOf.getTime() + 3000)).toBe(true);
       const staleAddApi = await getRecommendations(new Request(`http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=add`,
         { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(staleAddApi.status).toBe(200);
@@ -300,6 +350,8 @@ describe("Yahoo lineup hosted database integration", () => {
       else process.env.CRON_SECRET = previousCronSecret;
       if (scoutRunIds.length) checked("cleanup Scout runs", (await client.from("scout_runs").delete().in("id", scoutRunIds)).error);
       checked("cleanup briefs", (await client.from("daily_briefs").delete().eq("league_id", leagueId)).error);
+      checked("cleanup decisions", (await client.from("decision_events").delete().eq("league_id", leagueId)).error);
+      checked("cleanup predictions", (await client.from("prediction_events").delete().eq("league_id", leagueId)).error);
       checked("cleanup recommendations", (await client.from("recommendations").delete().eq("league_id", leagueId)).error);
       checked("cleanup availability rows", (await client.from("league_available_players").delete().eq("league_id", leagueId)).error);
       checked("cleanup availability scan", (await client.from("league_available_scans").delete().eq("league_id", leagueId)).error);

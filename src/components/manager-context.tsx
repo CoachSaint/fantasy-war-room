@@ -83,7 +83,11 @@ export function ManagerContext() {
   return (
     <aside className="context-strip" aria-label="Active manager context">
       <div><strong>{leagueName ?? "Connected league"}</strong><span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>{managerLabel + leagueLabel}</span></div>
-      <Link href="/league/settings" style={{ color: "var(--good)", fontWeight: 700, whiteSpace: "nowrap" }}>Settings</Link>
+      <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
+        <Link href="/history" style={{ color: "var(--good)", fontWeight: 700 }}>History</Link>
+        <Link href="/accuracy" style={{ color: "var(--good)", fontWeight: 700 }}>Accuracy</Link>
+        <Link href="/league/settings" style={{ color: "var(--good)", fontWeight: 700 }}>Settings</Link>
+      </div>
     </aside>
   );
 }

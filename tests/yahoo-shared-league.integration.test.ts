@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 import type { YahooLeagueImport } from "../src/lib/data/yahoo";
 import { persistYahooImports } from "../src/lib/integrations/yahoo-sync";
+import { withYahooLeagueLeases } from "../src/lib/integrations/yahoo-league-lease";
 import { GET as getContext } from "../src/app/api/context/route";
 import { GET as getDraft } from "../src/app/api/draft/route";
 
@@ -113,6 +114,45 @@ describe("shared Yahoo league hosted integration", () => {
         { overall_pick: 2, provider_team_key: teamKeys[1] },
       ]);
 
+      // Model an older manager's stale import after both teams are claimed.
+      // The database must preserve the confirmed owner even if a writer omits it.
+      checked("preserve null owner", (await client.from("rosters")
+        .update({ owner_user_id: null }).eq("id", rosterByTeam.get(teamKeys[0])?.id)).error);
+      const preserved = await client.from("rosters").select("owner_user_id")
+        .eq("id", rosterByTeam.get(teamKeys[0])?.id).single();
+      checked("read preserved owner", preserved.error);
+      expect(preserved.data?.owner_user_id).toBe(users[0]);
+      const stolen = await client.from("rosters")
+        .update({ owner_user_id: users[2] }).eq("id", rosterByTeam.get(teamKeys[0])?.id);
+      expect(stolen.error?.message).toContain("yahoo_roster_already_claimed");
+
+      // A second manager cannot enter the shared-league write section until
+      // the first manager's import and availability publication have ended.
+      let unlock!: () => void;
+      let entered!: () => void;
+      const gate = new Promise<void>((resolve) => { unlock = resolve; });
+      const inside = new Promise<void>((resolve) => { entered = resolve; });
+      const firstLease = withYahooLeagueLeases(client, [leagueKey], randomUUID(), async () => {
+        entered();
+        await gate;
+      });
+      await inside;
+      let secondRan = false;
+      await expect(withYahooLeagueLeases(client, [leagueKey], randomUUID(), async () => {
+        secondRan = true;
+      })).rejects.toMatchObject({ code: "yahoo_league_sync_in_progress", status: 409 });
+      expect(secondRan).toBe(false);
+      unlock();
+      await firstLease;
+      await withYahooLeagueLeases(client, [leagueKey], randomUUID(), async () => {
+        secondRan = true;
+      });
+      expect(secondRan).toBe(true);
+      const released = await client.from("yahoo_league_sync_leases")
+        .select("provider_league_id").eq("provider_league_id", leagueKey);
+      checked("read released lease", released.error);
+      expect(released.data).toHaveLength(0);
+
       for (let index = 0; index < 2; index += 1) {
         const signed = await publicClient.auth.signInWithPassword({ email: emails[index], password });
         checked("sign in fixture manager", signed.error);
@@ -139,6 +179,10 @@ describe("shared Yahoo league hosted integration", () => {
       checked("sign in outsider", outsiderSignIn.error);
       const outsiderToken = outsiderSignIn.data.session?.access_token;
       if (!outsiderToken) throw new Error("outsider_session_missing");
+      const outsiderClaim = await publicClient.rpc("claim_yahoo_league_sync", {
+        p_league_key: leagueKey, p_lease_id: randomUUID(),
+      });
+      expect(outsiderClaim.error).not.toBeNull();
       expect((await getDraft(new Request(`http://localhost/api/draft?leagueId=${leagueId}`, {
         headers: { authorization: `Bearer ${outsiderToken}` },
       }))).status).toBe(403);

@@ -214,9 +214,9 @@ export async function materializeYahooLineupForLeague(
     if (result.error) throw new YahooLineupError("lineup_recommendations_write_failed");
     inserted = result.data?.length || 0;
   }
-  const old = await client.from("recommendations").delete()
+  const old = await client.from("recommendations").update({ fresh_until: asOf.toISOString() })
     .eq("league_id", leagueId).eq("engine_version", engineVersion)
-    .lt("computed_at", asOf.toISOString());
+    .lt("computed_at", asOf.toISOString()).gt("fresh_until", asOf.toISOString());
   if (old.error) throw new YahooLineupError("lineup_recommendations_cleanup_failed");
   return { leagueId, status: "complete", playersScored: scored.size, recommendationsInserted: inserted };
 }

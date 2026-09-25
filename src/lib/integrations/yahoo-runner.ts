@@ -7,6 +7,7 @@ import {
   refreshYahooAccessToken,
 } from "@/lib/integrations/yahoo-oauth";
 import { persistYahooAvailablePool, persistYahooImports, YahooSyncError } from "@/lib/integrations/yahoo-sync";
+import { withYahooLeagueLeases, YahooLeagueLeaseError } from "@/lib/integrations/yahoo-league-lease";
 import { refreshYahooDecisionsAfterImport } from "@/lib/services/yahoo-decision-refresh";
 import { errorResponse } from "@/lib/security/http";
 
@@ -79,63 +80,71 @@ export async function runYahooSync(adminClient: SupabaseClient, userId: string):
 
     try {
       const imports = await getYahooLeagueImports(accessToken);
-      const summary = await persistYahooImports(
-        adminClient,
-        userId,
-        String(connection.id),
-        connection.external_user_id ? String(connection.external_user_id) : null,
-        imports
-      );
-      let availablePlayersProcessed = 0;
-      let truncatedAvailabilityScans = 0;
-      let availabilityError: string | null = null;
-      for (const [index, imported] of imports.entries()) {
-        try {
-          const pool = await getYahooAvailablePool(accessToken, imported.leagueKey);
-          availablePlayersProcessed += await persistYahooAvailablePool(
-            adminClient, summary.leagueIds[index], imported, pool
-          );
-          if (pool.truncated) truncatedAvailabilityScans += 1;
-        } catch (error) {
-          availabilityError ??= error instanceof YahooSyncError ? error.code
-            : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_available_sync_failed";
+      return await withYahooLeagueLeases(adminClient, imports.map((item) => item.leagueKey), runId, async () => {
+        const summary = await persistYahooImports(
+          adminClient,
+          userId,
+          String(connection.id),
+          connection.external_user_id ? String(connection.external_user_id) : null,
+          imports
+        );
+        let availablePlayersProcessed = 0;
+        let truncatedAvailabilityScans = 0;
+        let availabilityError: string | null = null;
+        for (const [index, imported] of imports.entries()) {
+          try {
+            const pool = await getYahooAvailablePool(accessToken, imported.leagueKey);
+            availablePlayersProcessed += await persistYahooAvailablePool(
+              adminClient, summary.leagueIds[index], imported, pool
+            );
+            if (pool.truncated) truncatedAvailabilityScans += 1;
+          } catch (error) {
+            availabilityError ??= error instanceof YahooSyncError ? error.code
+              : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_available_sync_failed";
+          }
         }
-      }
-      // A roster change invalidates prior lineup/waiver advice. Recompute from
-      // forecasts already ingested by Scout; report missing forecasts explicitly.
-      const decisions = await refreshYahooDecisionsAfterImport(adminClient, summary.leagueIds);
-      const finishedAt = new Date().toISOString();
-      const connectionUpdate = await adminClient.from("provider_connections").update({
-        status: "connected",
-        error_code: availabilityError,
-        last_synced_at: finishedAt,
-        updated_at: finishedAt,
-      }).eq("id", connection.id).eq("user_id", userId).eq("sync_version", connection.sync_version).select("id").maybeSingle();
-      if (connectionUpdate.error || !connectionUpdate.data) return errorResponse("yahoo_sync_lock_lost", 409);
-      const runUpdate = await adminClient.from("provider_sync_runs").update({
-          status: availabilityError ? "completed_with_errors" : "completed",
-          leagues_processed: summary.leaguesProcessed,
-          rosters_processed: summary.rostersProcessed,
-          players_processed: summary.playersProcessed,
-          matchups_processed: summary.matchupsProcessed,
-          available_players_processed: availablePlayersProcessed,
+        // A roster change invalidates prior lineup/waiver advice. Recompute from
+        // forecasts already ingested by Scout; report missing forecasts explicitly.
+        const decisions = await refreshYahooDecisionsAfterImport(adminClient, summary.leagueIds);
+        const finishedAt = new Date().toISOString();
+        const connectionUpdate = await adminClient.from("provider_connections").update({
+          status: "connected",
           error_code: availabilityError,
-          finished_at: finishedAt,
-        }).eq("id", runId).eq("user_id", userId);
-      if (runUpdate.error) return errorResponse("yahoo_sync_persistence_failed", 503);
-      return NextResponse.json({
-        ok: !availabilityError, status: availabilityError ? "degraded" : "completed",
-        ...(availabilityError ? { error: availabilityError } : {}),
-        data: { ...summary, availablePlayersProcessed, truncatedAvailabilityScans, decisions },
-      }, { status: availabilityError ? 503 : 200 });
+          last_synced_at: finishedAt,
+          updated_at: finishedAt,
+        }).eq("id", connection.id).eq("user_id", userId).eq("sync_version", connection.sync_version).select("id").maybeSingle();
+        if (connectionUpdate.error || !connectionUpdate.data) return errorResponse("yahoo_sync_lock_lost", 409);
+        const runUpdate = await adminClient.from("provider_sync_runs").update({
+            status: availabilityError ? "completed_with_errors" : "completed",
+            leagues_processed: summary.leaguesProcessed,
+            rosters_processed: summary.rostersProcessed,
+            players_processed: summary.playersProcessed,
+            matchups_processed: summary.matchupsProcessed,
+            available_players_processed: availablePlayersProcessed,
+            error_code: availabilityError,
+            finished_at: finishedAt,
+          }).eq("id", runId).eq("user_id", userId);
+        if (runUpdate.error) return errorResponse("yahoo_sync_persistence_failed", 503);
+        return NextResponse.json({
+          ok: !availabilityError, status: availabilityError ? "degraded" : "completed",
+          ...(availabilityError ? { error: availabilityError } : {}),
+          data: { ...summary, availablePlayersProcessed, truncatedAvailabilityScans, decisions },
+        }, { status: availabilityError ? 503 : 200 });
+      });
     } catch (error) {
-      const code = error instanceof YahooSyncError ? error.code : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_sync_failed";
+      const code = error instanceof YahooSyncError || error instanceof YahooLeagueLeaseError ? error.code
+        : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_sync_failed";
       const finishedAt = new Date().toISOString();
       await Promise.all([
         adminClient.from("provider_sync_runs").update({ status: "failed", error_code: code, finished_at: finishedAt }).eq("id", runId).eq("user_id", userId),
-        adminClient.from("provider_connections").update({ status: "error", error_code: code, updated_at: finishedAt }).eq("id", connection.id).eq("user_id", userId).eq("sync_version", connection.sync_version),
+        adminClient.from("provider_connections").update({
+          status: code === "yahoo_league_sync_in_progress" ? "connected" : "error",
+          error_code: code === "yahoo_league_sync_in_progress" ? null : code,
+          updated_at: finishedAt,
+        }).eq("id", connection.id).eq("user_id", userId).eq("sync_version", connection.sync_version),
       ]);
-      return errorResponse(code, code === "yahoo_access_denied" ? 401 : 503);
+      return errorResponse(code, error instanceof YahooLeagueLeaseError ? error.status
+        : code === "yahoo_access_denied" ? 401 : 503);
     }
   } catch (error) {
     const code = error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_sync_failed";

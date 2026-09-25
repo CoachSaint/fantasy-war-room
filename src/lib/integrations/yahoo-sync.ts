@@ -301,7 +301,7 @@ async function persistYahooLeague(
     return {
       league_id: leagueId,
       provider_roster_id: team.teamKey,
-      owner_user_id: team.teamKey === imported.ownedTeamKey ? userId : priorOwner === userId ? null : priorOwner || null,
+      owner_user_id: team.teamKey === imported.ownedTeamKey ? userId : priorOwner || null,
       name: team.name,
       player_ids: canonicalIds,
       starter_ids: starters,

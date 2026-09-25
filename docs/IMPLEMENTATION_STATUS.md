@@ -6,6 +6,14 @@ Updated: 2026-09-25
 
 **Status: HOLD for full production distribution.** The repository is suitable for a protected demo and an integration preview. It is not evidence of a fully live, current, multi-tenant fantasy intelligence service until the configuration and live gates below are completed.
 
+### 2026-09-25 current candidate and review
+
+- The original deployment design is Vercel plus one **hosted Supabase Free** project (`fswsefqqlltmaktiqwge`). The Supabase CLI links to that project to apply migrations; production does not require local Docker. The hosted database measured about 18 MB after global source ingestion against the currently published 500 MB Free database allowance. Organization Free plan and no paid add-ons were independently checked on 2026-09-24, not rechecked today.
+- Local and hosted migrations `0001`–`0012` are aligned. Migration `0010` serializes imports of a shared Yahoo league across managers and preserves a confirmed roster owner against stale writes. A hosted three-user fixture passed two-manager league mapping, concurrent lease refusal, owner preservation, owner-theft refusal, and outsider lease refusal. The fixture used synthetic Yahoo data, not owner OAuth.
+- Migrations `0011`–`0012` write Yahoo decision and weekly-point prediction ledgers transactionally when recommendations are published, retain old recommendations on refresh, protect recorded facts against updates, and deny direct authenticated ledger writes. Connected History reads each user's recorded advice; Accuracy reports actual ledger counts while refusing an unverified accuracy score. A hosted disposable fixture passed ledger creation, refresh retention, owner/outsider/anonymous API boundaries, and write protection. Outcome finalization, calibration, and a real owner league remain open.
+- The last clean staged candidate before these review fixes was `95424ae3911c63235883b42d2bae1ecc7c13d038` on protected READY deployment `dpl_J2VMAH5PHd16JupiSgC3MrsJrp7b`. The public `fantasy-war-room-pi.vercel.app` alias remains on fallback `dpl_E8FFiYzfonqeR4npvGGQqg2jYYtg`. Review fixes in this worktree have not yet been pushed, merged, or promoted. Astra's read-only review of that prior commit returned HOLD for shared-league concurrency, missing ledger, and stale status documentation; the fixes require final rereview and release gates.
+- Mason's exact login email and owner Yahoo authorization have not been supplied. No real Yahoo roster, current-week matchup, or multi-manager import has been accepted, and scheduled Yahoo refresh is not active. Do not label the application fully live or complete until those checks pass.
+
 ### 2026-09-24 activation check
 
 - The dedicated Supabase project is on the **Free** plan with no selected paid add-ons. It has approximately 12 MB in a 500 MB database allowance. The application connects to the hosted project; a local Docker/Supabase CLI container is not required for production.
@@ -39,17 +47,17 @@ Updated: 2026-09-25
 
 | Gate | Current boundary | Owner evidence required |
 | --- | --- | --- |
-| Supabase | Dedicated Free project `fswsefqqlltmaktiqwge` is healthy and the current Vercel production alias reports connected Supabase in demo mode; the candidate branch has not been deployed | Exact candidate SHA/deployment binding, Mason login, and live access checks |
-| Schema | `0001` through `0006` are aligned on the dedicated project; `0006` only enables scheduler extensions and creates no job; private schema/data dumps predate `0005`, and disposable owner/outsider availability RLS reads passed | Recheck history before promotion and prove full user/membership isolation with real league data |
+| Supabase | Dedicated Free project `fswsefqqlltmaktiqwge` is healthy; the public alias is a connected demo fallback and newer candidate commits have been staged behind protection | Exact final candidate SHA/deployment binding, Mason login, and live access checks |
+| Schema | `0001` through `0012` are aligned on the dedicated project; `0006` creates no refresh job; private full schema/data dumps predate `0005`, and later additive migrations have read-only metadata/count checks and disposable hosted fixtures | Recheck history before promotion and prove full user/membership isolation with real league data |
 | League identity | Setup contract and persistence route exist | Authenticated real league setup, membership/roster mapping, persisted result |
 | Setup atomicity | Every write and compensating cleanup result is checked | Transactional RPC or equivalent plus injected-failure proof before self-service production use |
 | Sleeper | Public adapter exists; no account/league is configured here | Real league selection, current NFL state, roster/player ID verification |
-| Yahoo | Production Vercel reports Yahoo credentials configured, but no user has consented or imported a league; the candidate branch has not been deployed | Confirm Fantasy Sports: Read permission and exact callback, then prove Mason's consent and live import with his account |
+| Yahoo | Production Vercel reports Yahoo credentials configured, but no user has consented or imported a league; current review fixes remain local | Confirm Fantasy Sports: Read permission and exact callback, then prove Mason's consent and live import with his account |
 | Yahoo matchups | Current-week scoreboard fetch, normalization, persistence, schema and member-only RLS are implemented; no real Yahoo response or import is yet proven | Complete an authenticated Yahoo consent/sync and verify roster and matchup rows/counts against Yahoo's current-week scoreboard |
 | nflverse | Release assets and bounded parser exist; some seasons/assets may be unavailable | Current season/week asset availability, timestamps, sample data validation |
 | Materialization | Candidate branch persists source-labeled global nflverse actuals, matched evidence, and current-week Sleeper forecasts; narrow Yahoo lineup, available-player add/drop, and recommendation-change brief paths passed a disposable hosted-database control fixture; full snapshot diff remains skipped | Repeatable live Scout run with real Yahoo consent, exact league scoring, waiver/FAAB and draft decisions, and source-backed actions across the release surfaces |
 | Coach | Broad action questions use fresh structured league evidence without a model key; the optional OpenRouter path remains for richer explanations and is not proven with a real league | Optional provider/model policy, cost/rate checks, evidence-grounded live response, and human question trials |
-| Vercel | Cron declaration and a healthy current demo deployment exist; candidate branch is local only | Exact candidate deployment binding, cron history, auth negative/positive checks |
+| Vercel | Cron declaration, a healthy public demo fallback, and protected candidate stages exist; current review fixes are not staged | Exact final candidate deployment binding, cron history, auth negative/positive checks |
 | Yahoo refresh schedule | The cron-authenticated endpoint and a guarded two-hour SQL job script are in the candidate; the hosted project has zero active Yahoo jobs | Deploy exact candidate, verify cron bearer and import behavior, store secret in Vault, activate job, and inspect actual job/HTTP/provider results |
 | Rollback | Application rollback procedure is documented | Exact known-good deployment/SHA, database backup/PITR anchor, tested recovery |
 
@@ -75,3 +83,5 @@ Updated: 2026-09-25
 10. Record deployment URL/ID, migration result, health output, cron history, provider freshness, rollback anchor, and final owner go/no-go.
 
 The final go/no-go and owner-participation credential actions remain with the release owner. This document intentionally does not claim they have occurred.
+
+Powered by JTF Software Solutions
