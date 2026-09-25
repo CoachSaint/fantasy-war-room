@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { selectPrimaryMembership } from "@/lib/select-primary-membership";
 
 type ContextState =
   | { status: "loading" }
@@ -38,7 +39,8 @@ export function ManagerContext() {
         } else {
           const data = isRecord(payload.data) ? payload.data : null;
           const memberships = data && Array.isArray(data.memberships) ? data.memberships : [];
-          const context = memberships.length > 0 && isRecord(memberships[0]) ? memberships[0] : isRecord(payload.context) ? payload.context : null;
+          const primary = selectPrimaryMembership(memberships);
+          const context = isRecord(primary) ? primary : isRecord(payload.context) ? payload.context : null;
           if (!context) {
             setState({ status: "setup_required", message: "No league membership is available for this account." });
           } else {

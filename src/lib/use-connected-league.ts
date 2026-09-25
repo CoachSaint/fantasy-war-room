@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { selectPrimaryMembership } from "@/lib/select-primary-membership";
 
 export type ConnectedLeague = {
   league: { id: string; name: string; provider: string; season: number; currentWeek: number; scoringRuleCount: number; receptionPoints: number | null; rosterSlots: string[] };
@@ -26,7 +27,7 @@ export function useConnectedLeague(): LeagueState {
         if (!body || typeof body !== "object" || !("data" in body)) return setState({ status: "unavailable" });
         const data = (body as { data?: { memberships?: unknown } }).data;
         const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
-        const primary = memberships.find((entry) => entry?.membership?.isPrimary) ?? memberships[0];
+        const primary = selectPrimaryMembership(memberships);
         if (!primary?.league?.id) return setState({ status: "setup_required" });
         const scoring = primary.league.scoring;
         const modifiers = scoring && typeof scoring === "object" && !Array.isArray(scoring)
