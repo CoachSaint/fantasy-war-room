@@ -72,7 +72,10 @@ function ConnectedPlayersPage({ leagueId, leagueName, season, week }: { leagueId
 
   const filtered = (players || []).filter((player) => `${player.full_name} ${player.team ?? ""} ${player.position}`.toLowerCase().includes(search.toLowerCase()));
   const currentProjection = detail?.snapshots.find((snapshot) => snapshot.season === season && snapshot.week === week && snapshot.source === "sleeper_weekly_projections");
-  const latestActual = detail?.snapshots.find((snapshot) => typeof snapshot.data?.actualFantasyPoints === "number");
+  const actualHistory = (detail?.snapshots || [])
+    .filter((snapshot) => snapshot.source === "nflverse_stats_player" &&
+      typeof snapshot.data?.actualFantasyPoints === "number" && Number.isFinite(snapshot.data.actualFantasyPoints))
+    .sort((a, b) => b.season - a.season || b.week - a.week).slice(0, 3);
   const ppr = currentProjection?.data?.projectedFantasyPointsPpr;
   const halfPpr = currentProjection?.data?.projectedFantasyPointsHalfPpr;
   const standard = currentProjection?.data?.projectedFantasyPointsStandard;
@@ -98,7 +101,15 @@ function ConnectedPlayersPage({ leagueId, leagueName, season, week }: { leagueId
               <h2 style={{ margin: 0 }}>{detail.player.full_name}</h2>
               <p className="muted" style={{ margin: 0 }}>{detail.player.position} · {detail.player.team ?? "No team"}{detail.player.status ? ` · ${detail.player.status}` : ""}</p>
               {currentProjection ? <p style={{ margin: 0 }}>Week {week} forecast: {typeof standard === "number" ? `${standard} standard` : "standard unavailable"} · {typeof halfPpr === "number" ? `${halfPpr} half PPR` : "half PPR unavailable"} · {typeof ppr === "number" ? `${ppr} PPR` : "PPR unavailable"} <span className="muted">(Sleeper, observed {new Date(currentProjection.observed_at).toLocaleString()}; accuracy unverified)</span></p> : <p className="muted">No current-week forward projection is available for this player.</p>}
-              {latestActual && <p className="muted" style={{ margin: 0 }}>Week {latestActual.week}, {latestActual.season} actual: {String(latestActual.data.actualFantasyPoints)} points ({latestActual.source}).</p>}
+              <section aria-label="Observed game results" style={{ display: "grid", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Recent observed PPR points</h3>
+                {actualHistory.length ? <>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
+                    {[...actualHistory].reverse().map((snapshot) => <span key={`${snapshot.season}-${snapshot.week}`} className="pill">Week {snapshot.week}: {String(snapshot.data.actualFantasyPoints)}</span>)}
+                  </div>
+                  <p className="muted" style={{ margin: 0, fontSize: 12 }}>Published game results from nflverse; these are not future forecasts.</p>
+                </> : <p className="muted" style={{ margin: 0 }}>No recent published game results for this player.</p>}
+              </section>
               <h3 style={{ marginBottom: 0 }}>Evidence</h3>
               {detail.evidence.length === 0 ? <p className="muted">No evidence has been saved for this player.</p> : detail.evidence.map((item) => <article key={item.id} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}><strong>{item.type.replaceAll("_", " ")}</strong><p style={{ margin: "4px 0" }}>{item.summary}</p><span className="muted" style={{ fontSize: 12 }}>{item.source} · {new Date(item.observed_at).toLocaleString()}</span>{item.source_url && <a href={item.source_url} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>Source</a>}</article>)}
             </>}

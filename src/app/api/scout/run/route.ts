@@ -28,6 +28,7 @@ interface StepDetail {
   recordsProcessed: number;
   error?: string;
   sourceWeek?: number;
+  sourceWeeks?: number[];
   unmappedRecords?: number;
 }
 
@@ -145,7 +146,7 @@ async function handleScoutRun(request: Request) {
   const fetchStart = Date.now();
   try {
     const [stats, evidence] = await Promise.all([
-      nflverse.getLatestAvailablePlayerSnapshots(input),
+      nflverse.getRecentPlayerSnapshots(input),
       nflverse.getEvidence(input),
     ]);
     const snapshots = stats.snapshots;
@@ -159,7 +160,7 @@ async function handleScoutRun(request: Request) {
       playersProcessed = result.playersMapped;
       evidenceIngested = result.evidenceInserted;
       steps.push(step("player_normalization", "success", fetchStart, result.playersMapped));
-      steps.push({ ...step("stats_snapshot_ingestion", "success", fetchStart, result.snapshotsInserted), sourceWeek: stats.week! });
+      steps.push({ ...step("stats_snapshot_ingestion", "success", fetchStart, result.snapshotsInserted), sourceWeek: stats.week!, sourceWeeks: stats.weeks });
       if (!evidence.length) {
         steps.push(step("evidence_ingestion_dedupe", "skipped", fetchStart, 0, "provider_unavailable"));
       } else if (result.evidenceUnmapped) {

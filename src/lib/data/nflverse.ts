@@ -75,6 +75,7 @@ export interface NflverseSnapshot extends PlayerSnapshot {
 export interface NflverseAdapter {
   getPlayerSnapshots(input: { season: number; week: number }): Promise<NflverseSnapshot[]>;
   getLatestAvailablePlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; snapshots: NflverseSnapshot[] }>;
+  getRecentPlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; weeks: number[]; snapshots: NflverseSnapshot[] }>;
   getYahooCrosswalk(input: { season: number; week: number }): Promise<NflverseCrosswalk>;
   getEvidence(input: { season: number; week: number }): Promise<Evidence[]>;
   parsePlayerStats(data: NflverseRawStat[], season: number, week: number): PlayerSnapshot[];
@@ -253,6 +254,19 @@ export function parseLatestAvailablePlayerStats(
   if (!availableWeeks.length) return { week: null, snapshots: [] };
   const week = Math.max(...availableWeeks);
   return { week, snapshots: parsePlayerStats(data, season, week) };
+}
+
+/** Keep a bounded observed history, including a partial current week. */
+export function parseRecentPlayerStats(
+  data: NflverseRawStat[], season: number, requestedWeek: number
+): { week: number | null; weeks: number[]; snapshots: NflverseSnapshot[] } {
+  const weeks = [...new Set(data
+    .filter((row) => numberValue(row.season) === season && row.player_id && row.player_name)
+    .map((row) => numberValue(row.week))
+    .filter((week): week is number => week != null && Number.isInteger(week) && week <= requestedWeek))]
+    .sort((a, b) => a - b).slice(-3);
+  return { week: weeks.at(-1) ?? null, weeks,
+    snapshots: weeks.flatMap((week) => parsePlayerStats(data, season, week)) };
 }
 
 export interface NflverseWeeklyRosterId {
@@ -447,6 +461,16 @@ export const nflverse: NflverseAdapter = {
       return parseLatestAvailablePlayerStats(raw as NflverseRawStat[], season, week);
     } catch {
       return { week: null, snapshots: [] };
+    }
+  },
+
+  async getRecentPlayerSnapshots({ season, week }: { season: number; week: number }) {
+    const url = nflverseReleaseAssetUrl("stats_player", `stats_player_week_${season}.csv`);
+    try {
+      const raw = await readReleaseAsset(url);
+      return parseRecentPlayerStats(raw as NflverseRawStat[], season, week);
+    } catch {
+      return { week: null, weeks: [], snapshots: [] };
     }
   },
 

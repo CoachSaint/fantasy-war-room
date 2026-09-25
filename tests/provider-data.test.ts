@@ -7,6 +7,7 @@ import {
   parseInjuryReport,
   parsePlayerStats,
   parseLatestAvailablePlayerStats,
+  parseRecentPlayerStats,
   parseYahooCrosswalk,
 } from "../src/lib/data/nflverse";
 
@@ -108,6 +109,21 @@ describe("nflverse release adapters", () => {
     expect(selected.snapshots).toHaveLength(1);
     expect(selected.snapshots[0].actualPoints).toBe(17);
     expect(selected.snapshots[0].projectedPoints).toBeUndefined();
+  });
+
+  it("keeps three observed weeks even when the latest week is partial", () => {
+    const selected = parseRecentPlayerStats([
+      { player_id: "a", player_name: "A", season: 2026, week: 1, fantasy_points_ppr: 8 },
+      { player_id: "a", player_name: "A", season: 2026, week: 2, fantasy_points_ppr: 12 },
+      { player_id: "b", player_name: "B", season: 2026, week: 2, fantasy_points_ppr: 20 },
+      { player_id: "a", player_name: "A", season: 2026, week: 3, fantasy_points_ppr: 3 },
+      { player_id: "a", player_name: "A", season: 2026, week: 4, fantasy_points_ppr: 100 },
+    ], 2026, 3);
+    expect(selected.weeks).toEqual([1, 2, 3]);
+    expect(selected.week).toBe(3);
+    expect(selected.snapshots.map((item) => `${item.playerId}:${item.week}:${item.actualPoints}`))
+      .toEqual(["a:1:8", "a:2:12", "b:2:20", "a:3:3"]);
+    expect(selected.snapshots.every((item) => item.projectedPoints === undefined)).toBe(true);
   });
 
   it("joins Yahoo and GSIS IDs only from an unambiguous current roster week", () => {

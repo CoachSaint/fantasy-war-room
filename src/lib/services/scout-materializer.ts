@@ -100,9 +100,17 @@ export async function materializeGlobalNflverse(
   const eligible = [...new Map(snapshots.filter((snapshot) =>
     snapshot.playerId && !snapshot.playerId.startsWith("nflv_player_") &&
     snapshot.fullName?.trim() && positions.has(snapshot.position as Position)
-  ).map((snapshot) => [snapshot.playerId, snapshot])).values()];
+  ).map((snapshot) => [`${snapshot.season}:${snapshot.week}:${snapshot.playerId}`, snapshot])).values()];
   if (!eligible.length) throw new ScoutMaterializationError("no_canonical_player_ids");
-  const providerIds = eligible.map((snapshot) => snapshot.playerId);
+  const providerIds = [...new Set(eligible.map((snapshot) => snapshot.playerId))];
+  const newestById = new Map<string, NflverseSnapshot>();
+  for (const snapshot of eligible) {
+    const previous = newestById.get(snapshot.playerId);
+    if (!previous || snapshot.season > previous.season ||
+      (snapshot.season === previous.season && snapshot.week > previous.week)) {
+      newestById.set(snapshot.playerId, snapshot);
+    }
+  }
   const mapped = new Map<string, string>();
 
   for (const batch of chunks(providerIds)) {
@@ -114,7 +122,7 @@ export async function materializeGlobalNflverse(
     for (const row of result.data || []) mapped.set(String(row.provider_player_id), String(row.player_id));
   }
 
-  const missing = eligible.filter((snapshot) => !mapped.has(snapshot.playerId));
+  const missing = providerIds.filter((id) => !mapped.has(id)).map((id) => newestById.get(id)!);
   for (const batch of chunks(missing)) {
     const players = await client.from("players")
       .upsert(batch.map((snapshot) => ({
