@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { NflverseSnapshot } from "@/lib/data/nflverse";
+import type { SleeperWeeklyProjection } from "@/lib/data/sleeper";
 import type { Evidence, Position } from "@/lib/types";
 
 const positions = new Set<Position>(["QB", "RB", "WR", "TE", "K", "DST"]);
@@ -18,6 +19,13 @@ export type GlobalMaterializationResult = {
   snapshotsInserted: number;
   evidenceInserted: number;
   evidenceUnmapped: number;
+};
+
+export type ProjectionMaterializationResult = {
+  projectionsMapped: number;
+  snapshotsInserted: number;
+  evidenceInserted: number;
+  projectionsUnmapped: number;
 };
 
 function chunks<T>(items: T[]): T[][] {
@@ -152,5 +160,77 @@ export async function materializeGlobalNflverse(
     snapshotsInserted,
     evidenceInserted,
     evidenceUnmapped: evidence.length - resolvedEvidence.length,
+  };
+}
+
+/** Store observed provider forecasts only where a GSIS identity is exact. */
+export async function materializeSleeperProjections(
+  client: SupabaseClient,
+  projections: SleeperWeeklyProjection[],
+  sleeperToGsis: Map<string, string>,
+): Promise<ProjectionMaterializationResult> {
+  const gsisIds = [...new Set(projections.map((item) => sleeperToGsis.get(item.sleeperId)).filter((id): id is string => Boolean(id)))];
+  const canonicalByGsis = new Map<string, string>();
+  for (const batch of chunks(gsisIds)) {
+    const result = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (result.error) throw new ScoutMaterializationError("projection_mapping_read_failed");
+    for (const row of result.data || []) canonicalByGsis.set(String(row.provider_player_id), String(row.player_id));
+  }
+  const matched = projections.flatMap((item) => {
+    const gsisId = sleeperToGsis.get(item.sleeperId);
+    const playerId = gsisId ? canonicalByGsis.get(gsisId) : undefined;
+    return playerId ? [{ item, playerId }] : [];
+  });
+  let snapshotsInserted = 0;
+  let evidenceInserted = 0;
+  for (const batch of chunks(matched)) {
+    const rows = batch.map(({ item, playerId }) => {
+      const fingerprint = createHash("sha256").update(JSON.stringify({
+        sleeperId: item.sleeperId, season: item.season, week: item.week,
+        ppr: item.ppr, halfPpr: item.halfPpr, standard: item.standard,
+      })).digest("hex");
+      return { item, playerId, fingerprint };
+    });
+    const snapshots = await client.from("player_snapshots").upsert(rows.map(({ item, playerId, fingerprint }) => ({
+      player_id: playerId,
+      season: item.season,
+      week: item.week,
+      data: {
+        providerPlayerId: item.sleeperId,
+        projectedFantasyPointsPpr: item.ppr,
+        projectedFantasyPointsHalfPpr: item.halfPpr,
+        projectedFantasyPointsStandard: item.standard,
+        projectionAccuracyVerified: false,
+      },
+      observed_at: item.observedAt,
+      source: "sleeper_weekly_projections",
+      fingerprint,
+    })), { onConflict: "source,fingerprint", ignoreDuplicates: true }).select("id");
+    if (snapshots.error) throw new ScoutMaterializationError("projection_snapshot_write_failed");
+    snapshotsInserted += snapshots.data?.length || 0;
+
+    const evidence = await client.from("evidence").upsert(rows.map(({ item, playerId, fingerprint }) => ({
+      player_id: playerId,
+      type: "projection",
+      source: "sleeper_weekly_projections",
+      source_url: `https://api.sleeper.app/v1/projections/nfl/regular/${item.season}/${item.week}`,
+      summary: `Sleeper Week ${item.week} forecast: standard ${item.standard ?? "unavailable"}, half PPR ${item.halfPpr ?? "unavailable"}, PPR ${item.ppr ?? "unavailable"} points. Forecast accuracy has not been verified.`,
+      confidence: 100,
+      published_at: null,
+      observed_at: item.observedAt,
+      fingerprint: `sleeper_projection_${fingerprint}`,
+      metadata: { confidenceMeaning: "exact_source_transcription", projectionAccuracyVerified: false },
+    })), { onConflict: "fingerprint", ignoreDuplicates: true }).select("id");
+    if (evidence.error) throw new ScoutMaterializationError("projection_evidence_write_failed");
+    evidenceInserted += evidence.data?.length || 0;
+  }
+  return {
+    projectionsMapped: matched.length,
+    snapshotsInserted,
+    evidenceInserted,
+    projectionsUnmapped: projections.length - matched.length,
   };
 }

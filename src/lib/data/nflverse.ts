@@ -74,6 +74,7 @@ export interface NflverseSnapshot extends PlayerSnapshot {
 export interface NflverseAdapter {
   getPlayerSnapshots(input: { season: number; week: number }): Promise<NflverseSnapshot[]>;
   getLatestAvailablePlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; snapshots: NflverseSnapshot[] }>;
+  getYahooCrosswalk(input: { season: number; week: number }): Promise<{ week: number | null; ids: Map<string, string>; sleeperIds: Map<string, string> }>;
   getEvidence(input: { season: number; week: number }): Promise<Evidence[]>;
   parsePlayerStats(data: NflverseRawStat[], season: number, week: number): PlayerSnapshot[];
   parseDepthCharts(data: NflverseRawDepth[], season: number, week: number): Evidence[];
@@ -165,11 +166,30 @@ async function readReleaseAsset(url: string): Promise<unknown[]> {
     return [];
   }
 
-  // JSON is useful for local fixtures and mirrors; official releases are CSV.
+  // Bound the bytes while streaming. Some mirrors omit Content-Length, and a
+  // full depth-chart asset can be much larger than a small server function.
   const responseWithText = response as Response & { text?: () => Promise<string> };
-  if (typeof responseWithText.text === "function") {
-    const body = await responseWithText.text();
-    if (new TextEncoder().encode(body).length > MAX_RELEASE_BYTES) return [];
+  if (response.body || typeof responseWithText.text === "function") {
+    let body = "";
+    if (response.body) {
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let bytesRead = 0;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        bytesRead += value.byteLength;
+        if (bytesRead > MAX_RELEASE_BYTES) {
+          await reader.cancel();
+          return [];
+        }
+        body += decoder.decode(value, { stream: true });
+      }
+      body += decoder.decode();
+    } else {
+      body = await responseWithText.text!();
+      if (new TextEncoder().encode(body).length > MAX_RELEASE_BYTES) return [];
+    }
     const trimmed = body.trim();
     if (!trimmed) return [];
     if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
@@ -232,6 +252,57 @@ export function parseLatestAvailablePlayerStats(
   if (!availableWeeks.length) return { week: null, snapshots: [] };
   const week = Math.max(...availableWeeks);
   return { week, snapshots: parsePlayerStats(data, season, week) };
+}
+
+export interface NflverseWeeklyRosterId {
+  season?: number | string;
+  week?: number | string;
+  game_type?: string;
+  gsis_id?: string;
+  yahoo_id?: string;
+  sleeper_id?: string;
+}
+
+/** Exact Yahoo numeric ID to GSIS ID pairs from the current season roster. */
+export function parseYahooCrosswalk(
+  data: NflverseWeeklyRosterId[], season: number, requestedWeek: number
+): { week: number | null; ids: Map<string, string>; sleeperIds: Map<string, string> } {
+  const eligible = data.filter((row) =>
+    numberValue(row.season) === season &&
+    (row.game_type === "REG" || row.game_type === "POST") &&
+    numberValue(row.week) != null && numberValue(row.week)! <= requestedWeek &&
+    /^00-\d+$/.test(String(row.gsis_id || ""))
+  );
+  const week = eligible.length ? Math.max(...eligible.map((row) => numberValue(row.week)!)) : null;
+  if (week == null) return { week: null, ids: new Map(), sleeperIds: new Map() };
+  const ids = new Map<string, string>();
+  const ambiguous = new Set<string>();
+  const yahooByGsis = new Map<string, string>();
+  const sleeperIds = new Map<string, string>();
+  const ambiguousSleeper = new Set<string>();
+  for (const row of eligible.filter((item) => numberValue(item.week) === week)) {
+    const gsisId = String(row.gsis_id);
+    if (/^\d+$/.test(String(row.yahoo_id || ""))) {
+      const yahooId = String(row.yahoo_id);
+      const previous = ids.get(yahooId);
+      if (previous && previous !== gsisId) ambiguous.add(yahooId);
+      else ids.set(yahooId, gsisId);
+      const previousYahoo = yahooByGsis.get(gsisId);
+      if (previousYahoo && previousYahoo !== yahooId) {
+        ambiguous.add(previousYahoo);
+        ambiguous.add(yahooId);
+      } else yahooByGsis.set(gsisId, yahooId);
+    }
+    if (/^\d+$/.test(String(row.sleeper_id || ""))) {
+      const sleeperId = String(row.sleeper_id);
+      const previous = sleeperIds.get(sleeperId);
+      if (previous && previous !== gsisId) ambiguousSleeper.add(sleeperId);
+      else sleeperIds.set(sleeperId, gsisId);
+    }
+  }
+  for (const yahooId of ambiguous) ids.delete(yahooId);
+  for (const sleeperId of ambiguousSleeper) sleeperIds.delete(sleeperId);
+  return { week, ids, sleeperIds };
 }
 
 export function parseDepthCharts(
@@ -342,6 +413,16 @@ export const nflverse: NflverseAdapter = {
       return parseLatestAvailablePlayerStats(raw as NflverseRawStat[], season, week);
     } catch {
       return { week: null, snapshots: [] };
+    }
+  },
+
+  async getYahooCrosswalk({ season, week }: { season: number; week: number }) {
+    const url = nflverseReleaseAssetUrl("weekly_rosters", `roster_weekly_${season}.csv`);
+    try {
+      const raw = await readReleaseAsset(url);
+      return parseYahooCrosswalk(raw as NflverseWeeklyRosterId[], season, week);
+    } catch {
+      return { week: null, ids: new Map(), sleeperIds: new Map() };
     }
   },
 

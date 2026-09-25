@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { sleeper } from "../src/lib/data/sleeper";
+import { parseSleeperWeeklyProjections, sleeper } from "../src/lib/data/sleeper";
 import {
   nflverse,
   nflverseReleaseAssetUrl,
@@ -7,6 +7,7 @@ import {
   parseInjuryReport,
   parsePlayerStats,
   parseLatestAvailablePlayerStats,
+  parseYahooCrosswalk,
 } from "../src/lib/data/nflverse";
 
 afterEach(() => {
@@ -14,6 +15,14 @@ afterEach(() => {
 });
 
 describe("provider identity and availability", () => {
+  it("keeps only actual weekly projection fields, not ADP-only filler", () => {
+    const rows = parseSleeperWeeklyProjections({
+      "96": { pts_ppr: 14.09, pts_half_ppr: 14.09, pts_std: 14.09, adp_dd_ppr: 161 },
+      "19": { adp_dd_ppr: 1000 },
+      invalid: { pts_ppr: 12 },
+    }, 2026, 3, "2026-09-24T20:00:00.000Z");
+    expect(rows).toEqual([{ sleeperId: "96", season: 2026, week: 3, ppr: 14.09, halfPpr: 14.09, standard: 14.09, observedAt: "2026-09-24T20:00:00.000Z" }]);
+  });
   const league = {
     league_id: "league-1",
     name: "Test League",
@@ -99,6 +108,21 @@ describe("nflverse release adapters", () => {
     expect(selected.snapshots).toHaveLength(1);
     expect(selected.snapshots[0].actualPoints).toBe(17);
     expect(selected.snapshots[0].projectedPoints).toBeUndefined();
+  });
+
+  it("joins Yahoo and GSIS IDs only from an unambiguous current roster week", () => {
+    const crosswalk = parseYahooCrosswalk([
+      { season: 2026, week: 2, game_type: "REG", yahoo_id: "10", gsis_id: "00-0000010" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "10", sleeper_id: "510", gsis_id: "00-0000010" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "20", gsis_id: "00-0000020" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "20", gsis_id: "00-0000099" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "40", gsis_id: "00-0000040" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "41", gsis_id: "00-0000040" },
+      { season: 2026, week: 4, game_type: "REG", yahoo_id: "30", gsis_id: "00-0000030" },
+    ], 2026, 3);
+    expect(crosswalk.week).toBe(3);
+    expect([...crosswalk.ids]).toEqual([["10", "00-0000010"]]);
+    expect([...crosswalk.sleeperIds]).toEqual([["510", "00-0000010"]]);
   });
 
   it("retains depth order and practice participation in evidence", () => {

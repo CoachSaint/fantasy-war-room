@@ -1,5 +1,6 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { YahooLeagueImport, YahooPlayer } from "@/lib/data/yahoo";
+import { nflverse } from "@/lib/data/nflverse";
 
 export class YahooSyncError extends Error {
   constructor(public readonly code: string) {
@@ -28,24 +29,91 @@ function designation(selectedPosition: string | undefined): "starter" | "bench" 
   return "starter";
 }
 
-async function resolveYahooPlayers(
+export async function resolveYahooPlayers(
   client: SupabaseClient,
-  players: YahooPlayer[]
+  players: YahooPlayer[],
+  season: number,
+  week: number,
 ): Promise<Map<string, string>> {
   const uniquePlayers = [...new Map(players.map((player) => [player.playerKey, player])).values()];
   if (!uniquePlayers.length) return new Map();
-  const providerIds = uniquePlayers.map((player) => player.playerKey);
-  const existing = await client
-    .from("player_id_map")
-    .select("provider_player_id, player_id")
-    .eq("provider", "yahoo")
-    .in("provider_player_id", providerIds);
-  if (existing.error) throw new YahooSyncError("yahoo_player_mapping_unavailable");
-  const resolved = new Map<string, string>((existing.data || []).map((row) => [String(row.provider_player_id), String(row.player_id)]));
+  const chunks = <T>(items: T[]) => Array.from({ length: Math.ceil(items.length / 100) }, (_, i) => items.slice(i * 100, (i + 1) * 100));
+  const resolved = new Map<string, string>();
+  for (const batch of chunks(uniquePlayers)) {
+    const existing = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "yahoo")
+      .in("provider_player_id", batch.map((player) => player.playerKey));
+    if (existing.error) throw new YahooSyncError("yahoo_player_mapping_unavailable");
+    for (const row of existing.data || []) resolved.set(String(row.provider_player_id), String(row.player_id));
+  }
+
+  // The weekly roster release carries exact Yahoo and GSIS IDs. Reuse the
+  // GSIS-backed canonical row before creating a Yahoo-only identity. Missing or
+  // ambiguous crosswalk rows stay in the manual identity queue below.
+  const crosswalk = await nflverse.getYahooCrosswalk({ season, week });
+  const linked = uniquePlayers.filter((player) => {
+    const yahooId = /^\d+\.p\.(\d+)$/.exec(player.playerKey)?.[1];
+    return !resolved.has(player.playerKey) && yahooId && crosswalk.ids.has(yahooId);
+  }).map((player) => ({ player, gsisId: crosswalk.ids.get(/^\d+\.p\.(\d+)$/.exec(player.playerKey)![1])! }));
+  const nflverseMap = new Map<string, string>();
+  for (const batch of chunks([...new Set(linked.map((entry) => entry.gsisId))])) {
+    const existing = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (existing.error) throw new YahooSyncError("yahoo_crosswalk_mapping_unavailable");
+    for (const row of existing.data || []) nflverseMap.set(String(row.provider_player_id), String(row.player_id));
+  }
+  const unlinked = [...new Map(linked.filter((entry) => !nflverseMap.has(entry.gsisId))
+    .map((entry) => [entry.gsisId, entry])).values()];
+  for (const batch of chunks(unlinked)) {
+    const canonical = await client.from("players").upsert(batch.map(({ player, gsisId }) => ({
+      canonical_key: `nflverse:${gsisId}`,
+      full_name: player.fullName,
+      team: player.team || null,
+      position: player.position,
+      status: player.status || null,
+      identity_status: "provider_only",
+    })), { onConflict: "canonical_key" }).select("id, canonical_key");
+    if (canonical.error) throw new YahooSyncError("yahoo_crosswalk_player_create_failed");
+    const byKey = new Map((canonical.data || []).map((row) => [String(row.canonical_key), String(row.id)]));
+    const mappings = batch.map(({ gsisId }) => ({
+      provider: "nflverse",
+      provider_player_id: gsisId,
+      player_id: byKey.get(`nflverse:${gsisId}`),
+    }));
+    if (mappings.some((row) => !row.player_id)) throw new YahooSyncError("yahoo_crosswalk_player_create_failed");
+    const written = await client.from("player_id_map").upsert(mappings, { onConflict: "provider,provider_player_id", ignoreDuplicates: true });
+    if (written.error) throw new YahooSyncError("yahoo_crosswalk_mapping_failed");
+  }
+  for (const batch of chunks([...new Set(linked.map((entry) => entry.gsisId))])) {
+    const current = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (current.error) throw new YahooSyncError("yahoo_crosswalk_mapping_unavailable");
+    for (const row of current.data || []) nflverseMap.set(String(row.provider_player_id), String(row.player_id));
+  }
+  if (linked.some(({ gsisId }) => !nflverseMap.has(gsisId))) throw new YahooSyncError("yahoo_crosswalk_mapping_incomplete");
+  for (const batch of chunks(linked)) {
+    const mappings = await client.from("player_id_map").upsert(batch.map(({ player, gsisId }) => ({
+      provider: "yahoo",
+      provider_player_id: player.playerKey,
+      player_id: nflverseMap.get(gsisId),
+    })), { onConflict: "provider,provider_player_id", ignoreDuplicates: true });
+    if (mappings.error) throw new YahooSyncError("yahoo_player_mapping_failed");
+    const current = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "yahoo")
+      .in("provider_player_id", batch.map(({ player }) => player.playerKey));
+    if (current.error) throw new YahooSyncError("yahoo_player_mapping_unavailable");
+    for (const row of current.data || []) resolved.set(String(row.provider_player_id), String(row.player_id));
+  }
 
   const missing = uniquePlayers.filter((player) => !resolved.has(player.playerKey));
-  if (missing.length) {
-    const canonical = await client.from("players").upsert(missing.map((player) => ({
+  for (const batch of chunks(missing)) {
+    const canonical = await client.from("players").upsert(batch.map((player) => ({
       canonical_key: `yahoo:${player.playerKey}`,
       full_name: player.fullName,
       team: player.team || null,
@@ -56,7 +124,7 @@ async function resolveYahooPlayers(
     })), { onConflict: "canonical_key" }).select("id, canonical_key");
     if (canonical.error) throw new YahooSyncError("yahoo_player_materialization_failed");
     const playerIdByCanonicalKey = new Map((canonical.data || []).map((row) => [String(row.canonical_key), String(row.id)]));
-    const mappingRows = missing.map((player) => ({
+    const mappingRows = batch.map((player) => ({
       provider: "yahoo",
       provider_player_id: player.playerKey,
       player_id: playerIdByCanonicalKey.get(`yahoo:${player.playerKey}`),
@@ -64,7 +132,7 @@ async function resolveYahooPlayers(
     if (mappingRows.some((row) => !row.player_id)) throw new YahooSyncError("yahoo_player_materialization_failed");
     const mappings = await client.from("player_id_map").upsert(mappingRows, { onConflict: "provider,provider_player_id" });
     if (mappings.error) throw new YahooSyncError("yahoo_player_mapping_failed");
-    const queueRows = missing.map((player) => ({
+    const queueRows = batch.map((player) => ({
       provider: "yahoo",
       provider_player_id: player.playerKey,
       player_id: playerIdByCanonicalKey.get(`yahoo:${player.playerKey}`),
@@ -138,7 +206,7 @@ async function persistYahooLeague(
   }
 
   const allPlayers = imported.teams.flatMap((team) => team.players);
-  const playerIds = await resolveYahooPlayers(client, allPlayers);
+  const playerIds = await resolveYahooPlayers(client, allPlayers, imported.season, imported.currentWeek);
 
   const expandedSlots = imported.rosterSlots.flatMap((slot, slotIndex) => Array.from({ length: slot.count }, (_, offset) => ({
     league_id: leagueId,

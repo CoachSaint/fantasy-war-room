@@ -20,12 +20,12 @@ type PlayerDetail = {
 export default function PlayersPage() {
   const league = useConnectedLeague();
   if (league.status === "loading") return <LeagueGate state={league} />;
-  if (league.status === "connected") return <ConnectedPlayersPage leagueId={league.context.league.id} leagueName={league.context.league.name} />;
+  if (league.status === "connected") return <ConnectedPlayersPage leagueId={league.context.league.id} leagueName={league.context.league.name} season={league.context.league.season} week={league.context.league.currentWeek} />;
   if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
   return <DemoPlayersPage />;
 }
 
-function ConnectedPlayersPage({ leagueId, leagueName }: { leagueId: string; leagueName: string }) {
+function ConnectedPlayersPage({ leagueId, leagueName, season, week }: { leagueId: string; leagueName: string; season: number; week: number }) {
   const [players, setPlayers] = useState<ConnectedPlayer[] | null>(null);
   const [detail, setDetail] = useState<PlayerDetail | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -71,9 +71,11 @@ function ConnectedPlayersPage({ leagueId, leagueName }: { leagueId: string; leag
   }, [leagueId, selectedId]);
 
   const filtered = (players || []).filter((player) => `${player.full_name} ${player.team ?? ""} ${player.position}`.toLowerCase().includes(search.toLowerCase()));
-  const latest = detail?.snapshots[0];
-  const projected = latest?.data?.projectedFantasyPoints ?? latest?.data?.expectedFantasyPoints ?? latest?.data?.projectedPoints;
-  const actual = latest?.data?.actualFantasyPoints;
+  const currentProjection = detail?.snapshots.find((snapshot) => snapshot.season === season && snapshot.week === week && snapshot.source === "sleeper_weekly_projections");
+  const latestActual = detail?.snapshots.find((snapshot) => typeof snapshot.data?.actualFantasyPoints === "number");
+  const ppr = currentProjection?.data?.projectedFantasyPointsPpr;
+  const halfPpr = currentProjection?.data?.projectedFantasyPointsHalfPpr;
+  const standard = currentProjection?.data?.projectedFantasyPointsStandard;
 
   return (
     <>
@@ -95,7 +97,8 @@ function ConnectedPlayersPage({ leagueId, leagueName }: { leagueId: string; leag
             {detail && <>
               <h2 style={{ margin: 0 }}>{detail.player.full_name}</h2>
               <p className="muted" style={{ margin: 0 }}>{detail.player.position} · {detail.player.team ?? "No team"}{detail.player.status ? ` · ${detail.player.status}` : ""}</p>
-              {latest ? <p style={{ margin: 0 }}>Week {latest.week}, {latest.season}: {typeof projected === "number" ? `${projected} expected/projected points` : "no forward projection"}{typeof actual === "number" ? ` · ${actual} actual points` : ""} <span className="muted">({latest.source}, observed {new Date(latest.observed_at).toLocaleString()})</span></p> : <p className="muted">No source snapshot has been saved for this player.</p>}
+              {currentProjection ? <p style={{ margin: 0 }}>Week {week} forecast: {typeof standard === "number" ? `${standard} standard` : "standard unavailable"} · {typeof halfPpr === "number" ? `${halfPpr} half PPR` : "half PPR unavailable"} · {typeof ppr === "number" ? `${ppr} PPR` : "PPR unavailable"} <span className="muted">(Sleeper, observed {new Date(currentProjection.observed_at).toLocaleString()}; accuracy unverified)</span></p> : <p className="muted">No current-week forward projection is available for this player.</p>}
+              {latestActual && <p className="muted" style={{ margin: 0 }}>Week {latestActual.week}, {latestActual.season} actual: {String(latestActual.data.actualFantasyPoints)} points ({latestActual.source}).</p>}
               <h3 style={{ marginBottom: 0 }}>Evidence</h3>
               {detail.evidence.length === 0 ? <p className="muted">No evidence has been saved for this player.</p> : detail.evidence.map((item) => <article key={item.id} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}><strong>{item.type.replaceAll("_", " ")}</strong><p style={{ margin: "4px 0" }}>{item.summary}</p><span className="muted" style={{ fontSize: 12 }}>{item.source} · {new Date(item.observed_at).toLocaleString()}</span>{item.source_url && <a href={item.source_url} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>Source</a>}</article>)}
             </>}

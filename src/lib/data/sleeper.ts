@@ -2,6 +2,37 @@ import type { LeagueContext, Player, Position } from "@/lib/types";
 
 const SLEEPER_BASE = "https://api.sleeper.app/v1";
 
+export interface SleeperWeeklyProjection {
+  sleeperId: string;
+  season: number;
+  week: number;
+  ppr: number | null;
+  halfPpr: number | null;
+  standard: number | null;
+  observedAt: string;
+}
+
+function finiteProjection(value: unknown): number | null {
+  const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
+  return Number.isFinite(parsed) && parsed >= -20 && parsed <= 100 ? parsed : null;
+}
+
+/** Rows containing only ADP are excluded; they are not weekly forecasts. */
+export function parseSleeperWeeklyProjections(
+  raw: unknown, season: number, week: number, observedAt = new Date().toISOString()
+): SleeperWeeklyProjection[] {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
+  return Object.entries(raw).flatMap(([sleeperId, stats]) => {
+    if (!/^\d+$/.test(sleeperId) || !stats || typeof stats !== "object" || Array.isArray(stats)) return [];
+    const row = stats as Record<string, unknown>;
+    const ppr = finiteProjection(row.pts_ppr);
+    const halfPpr = finiteProjection(row.pts_half_ppr);
+    const standard = finiteProjection(row.pts_std);
+    if (ppr == null && halfPpr == null && standard == null) return [];
+    return [{ sleeperId, season, week, ppr, halfPpr, standard, observedAt }];
+  });
+}
+
 async function sleeperFetch<T>(path: string): Promise<T> {
   const response = await fetch(`${SLEEPER_BASE}${path}`, {
     headers: { Accept: "application/json" },
@@ -95,6 +126,21 @@ const playersCache: PlayersCache = {
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
 
 export const sleeper = {
+  getWeeklyProjections: async (season: number, week: number): Promise<SleeperWeeklyProjection[]> => {
+    // This observed public endpoint is outside Sleeper's published API reference.
+    // Keep it optional and never infer a projection from an ADP-only row.
+    const response = await fetch(`${SLEEPER_BASE}/projections/nfl/regular/${season}/${week}`, {
+      headers: { Accept: "application/json" },
+      next: { revalidate: 1800 },
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) throw new Error("sleeper_projections_unavailable");
+    const declared = Number(response.headers.get("content-length"));
+    if (Number.isFinite(declared) && declared > 2_000_000) throw new Error("sleeper_projections_too_large");
+    const body = await response.text();
+    if (new TextEncoder().encode(body).length > 2_000_000) throw new Error("sleeper_projections_too_large");
+    return parseSleeperWeeklyProjections(JSON.parse(body) as unknown, season, week);
+  },
   getUser: (usernameOrId: string) =>
     sleeperFetch<SleeperUser>(`/user/${encodeURIComponent(usernameOrId)}`),
 

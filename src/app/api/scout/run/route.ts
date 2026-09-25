@@ -5,7 +5,7 @@ import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
 import { errorResponse } from "@/lib/security/http";
 import { nflverse } from "@/lib/data/nflverse";
 import { sleeper } from "@/lib/data/sleeper";
-import { materializeGlobalNflverse, ScoutMaterializationError } from "@/lib/services/scout-materializer";
+import { materializeGlobalNflverse, materializeSleeperProjections, ScoutMaterializationError } from "@/lib/services/scout-materializer";
 
 export const dynamic = "force-dynamic";
 
@@ -34,6 +34,7 @@ interface StepDetail {
   recordsProcessed: number;
   error?: string;
   sourceWeek?: number;
+  unmappedRecords?: number;
 }
 
 function step(name: string, status: StepDetail["status"], startedAt: number, recordsProcessed: number, error?: string): StepDetail {
@@ -164,6 +165,29 @@ async function handleScoutRun(request: Request) {
     steps.push(step("player_normalization", "failed", fetchStart, 0, failureCode));
     steps.push(step("stats_snapshot_ingestion", "failed", fetchStart, 0, failureCode));
     steps.push(step("evidence_ingestion_dedupe", "failed", fetchStart, 0, failureCode));
+  }
+
+  const projectionStart = Date.now();
+  try {
+    const [projections, crosswalk] = await Promise.all([
+      sleeper.getWeeklyProjections(input.season, input.week),
+      nflverse.getYahooCrosswalk(input),
+    ]);
+    if (!projections.length || !crosswalk.sleeperIds.size) {
+      steps.push(step("projection_ingestion", "skipped", projectionStart, 0,
+        projections.length ? "projection_crosswalk_unavailable" : "projection_provider_unavailable"));
+    } else {
+      const result = await materializeSleeperProjections(adminClient, projections, crosswalk.sleeperIds);
+      steps.push({
+        ...step("projection_ingestion", "success", projectionStart, result.snapshotsInserted),
+        sourceWeek: input.week,
+        unmappedRecords: result.projectionsUnmapped,
+      });
+    }
+  } catch (error) {
+    const code = error instanceof ScoutMaterializationError ? error.code : "projection_provider_error";
+    failureCode ??= code;
+    steps.push(step("projection_ingestion", "failed", projectionStart, 0, code));
   }
 
   const scoringStart = Date.now();
