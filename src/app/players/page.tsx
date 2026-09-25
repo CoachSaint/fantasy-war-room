@@ -21,7 +21,7 @@ export default function PlayersPage() {
   const league = useConnectedLeague();
   if (league.status === "loading") return <LeagueGate state={league} />;
   if (league.status === "connected") return <ConnectedPlayersPage leagueId={league.context.league.id} leagueName={league.context.league.name} season={league.context.league.season} week={league.context.league.currentWeek} />;
-  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  if (league.status !== "auth_required" || process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
   return <DemoPlayersPage />;
 }
 

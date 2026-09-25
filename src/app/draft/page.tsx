@@ -20,7 +20,7 @@ export default function DraftPage() {
     return <ConnectedDraftPage leagueId={league.context.league.id} leagueName={league.context.league.name}
       provider={league.context.league.provider} />;
   }
-  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  if (league.status !== "auth_required" || process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
   return <DemoDraftPage />;
 }
 

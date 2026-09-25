@@ -16,7 +16,7 @@ export default function LineupPage() {
   if (league.status === "connected") {
     return <ConnectedDecisions leagueId={league.context.league.id} leagueName={league.context.league.name} eyebrow="Lineup lab" title="Start and sit decisions" description="Fresh lineup recommendations for your connected roster." kinds={["start", "sit"]} />;
   }
-  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  if (league.status !== "auth_required" || process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
   return <DemoLineupPage />;
 }
 
