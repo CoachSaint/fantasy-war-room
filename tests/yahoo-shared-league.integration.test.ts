@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { YahooLeagueImport } from "../src/lib/data/yahoo";
 import { persistYahooImports } from "../src/lib/integrations/yahoo-sync";
 import { GET as getContext } from "../src/app/api/context/route";
+import { GET as getDraft } from "../src/app/api/draft/route";
 
 const live = process.env.FWR_LIVE_TEST === "1";
 
@@ -33,6 +34,11 @@ describe("shared Yahoo league hosted integration", () => {
     const imported = (ownedTeamKey: string): YahooLeagueImport => ({
       leagueKey, leagueId: leagueKey.split(".")[2], name: "Disposable shared Yahoo fixture",
       season: 2026, currentWeek: 3, ownedTeamKey,
+      draftStatus: "postdraft", draftHistoryStatus: "ready",
+      draftPicks: [{ overallPick: ownedTeamKey === teamKeys[0] ? 1 : 2, round: 1,
+        teamKey: ownedTeamKey, playerKey: ownedTeamKey === teamKeys[0] ? "449.p.31" : "449.p.32",
+        playerName: ownedTeamKey === teamKeys[0] ? "Fixture Runner" : "Fixture Receiver",
+        playerPosition: ownedTeamKey === teamKeys[0] ? "RB" : "WR" }],
       rosterSlots: [{ slotType: "RB", count: 1, eligiblePositions: ["RB"], required: true }],
       scoringModifiers: { "9": 0.1 },
       teams: teamKeys.map((teamKey, index) => ({
@@ -98,6 +104,14 @@ describe("shared Yahoo league hosted integration", () => {
       checked("read workspace members", workspaceMembers.error);
       expect(new Map((workspaceMembers.data || []).map((member) => [member.user_id, member.role])))
         .toEqual(new Map([[users[0], "owner"], [users[1], "member"]]));
+      const savedPicks = await client.from("league_draft_picks")
+        .select("overall_pick, provider_team_key").eq("league_id", leagueId)
+        .order("overall_pick", { ascending: true });
+      checked("read saved draft picks", savedPicks.error);
+      expect(savedPicks.data).toMatchObject([
+        { overall_pick: 1, provider_team_key: teamKeys[0] },
+        { overall_pick: 2, provider_team_key: teamKeys[1] },
+      ]);
 
       for (let index = 0; index < 2; index += 1) {
         const signed = await publicClient.auth.signInWithPassword({ email: emails[index], password });
@@ -112,7 +126,22 @@ describe("shared Yahoo league hosted integration", () => {
         expect(body.status).toBe("ready");
         expect(body.data.memberships[0].league.id).toBe(leagueId);
         expect(body.data.memberships[0].roster.id).toBe(rosterByTeam.get(teamKeys[index])?.id);
+        const draft = await getDraft(new Request(`http://localhost/api/draft?leagueId=${leagueId}`, {
+          headers: { authorization: `Bearer ${token}` },
+        }));
+        expect(draft.status).toBe(200);
+        const draftBody = await draft.json();
+        expect(draftBody).toMatchObject({ draftStatus: "postdraft", status: "ready",
+          picks: [{ overallPick: index + 1, playerName: index === 0 ? "Fixture Runner" : "Fixture Receiver" }] });
+        expect(draftBody.picks).toHaveLength(1);
       }
+      const outsiderSignIn = await publicClient.auth.signInWithPassword({ email: emails[2], password });
+      checked("sign in outsider", outsiderSignIn.error);
+      const outsiderToken = outsiderSignIn.data.session?.access_token;
+      if (!outsiderToken) throw new Error("outsider_session_missing");
+      expect((await getDraft(new Request(`http://localhost/api/draft?leagueId=${leagueId}`, {
+        headers: { authorization: `Bearer ${outsiderToken}` },
+      }))).status).toBe(403);
     } finally {
       if (leagueId) checked("cleanup shared league", (await client.from("leagues").delete().eq("id", leagueId)).error);
       if (connectionIds.length) checked("cleanup connections", (await client.from("provider_connections").delete().in("id", connectionIds)).error);

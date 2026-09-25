@@ -48,6 +48,18 @@ export interface YahooLeagueImport {
   scoringModifiers: Record<string, number>;
   teams: YahooTeamRoster[];
   matchups: YahooMatchup[];
+  draftStatus?: "predraft" | "drafting" | "postdraft" | "unknown";
+  draftHistoryStatus?: "ready" | "unavailable" | "not_started";
+  draftPicks?: YahooDraftPick[];
+}
+
+export interface YahooDraftPick {
+  overallPick: number;
+  round: number;
+  teamKey: string;
+  playerKey: string;
+  playerName?: string;
+  playerPosition?: Position;
 }
 
 export interface YahooMatchup {
@@ -264,6 +276,35 @@ export function normalizeYahooOwnedTeams(payload: unknown): YahooTeamRoster[] {
   return [...byKey.values()];
 }
 
+/** Read the authenticated team's ordered picks, never a guessed draft board. */
+export function normalizeYahooDraftResults(payload: unknown, teamKey: string): YahooDraftPick[] {
+  if (!/^\d+\.l\.\d+\.t\.\d+$/.test(teamKey)) throw new Error("yahoo_draft_team_invalid");
+  const collections = findNamedNodes(payload, "draft_results");
+  if (collections.length !== 1) throw new Error("yahoo_draft_payload_invalid");
+  const raw = findNamedNodes(collections[0], "draft_result");
+  if (raw.length > 40) throw new Error("yahoo_draft_payload_invalid");
+  const gamePrefix = `${teamKey.split(".")[0]}.p.`;
+  const seenPicks = new Set<number>();
+  const seenPlayers = new Set<string>();
+  const picks = raw.map((node) => {
+    const overallPick = number(node, "pick");
+    const round = number(node, "round");
+    const playerKey = text(node, "player_key");
+    const reportedTeamKey = text(node, "team_key");
+    if (!Number.isInteger(overallPick) || overallPick! < 1 || overallPick! > 1000 ||
+        !Number.isInteger(round) || round! < 1 || round! > 100 ||
+        !playerKey?.startsWith(gamePrefix) || !/^\d+\.p\.\d+$/.test(playerKey) ||
+        (reportedTeamKey && reportedTeamKey !== teamKey) ||
+        seenPicks.has(overallPick!) || seenPlayers.has(playerKey)) {
+      throw new Error("yahoo_draft_payload_invalid");
+    }
+    seenPicks.add(overallPick!);
+    seenPlayers.add(playerKey);
+    return { overallPick: overallPick!, round: round!, teamKey, playerKey };
+  });
+  return picks.sort((a, b) => a.overallPick - b.overallPick);
+}
+
 export function normalizeYahooLeagueImport(
   metadataPayload: unknown,
   settingsPayload: unknown,
@@ -278,6 +319,9 @@ export function normalizeYahooLeagueImport(
   const name = text(leagueNode, "name");
   const season = number(leagueNode, "season");
   const currentWeek = number(leagueNode, "current_week");
+  const rawDraftStatus = text(leagueNode, "draft_status")?.toLowerCase();
+  const draftStatus = rawDraftStatus === "predraft" || rawDraftStatus === "drafting" || rawDraftStatus === "postdraft"
+    ? rawDraftStatus : "unknown";
   if (!leagueKey || !/^\d+\.l\.\d+$/.test(leagueKey) || leagueKey !== leagueKeyFromTeamKey(ownedTeamKey) || !leagueId || !name) {
     throw new Error("yahoo_payload_invalid");
   }
@@ -326,6 +370,9 @@ export function normalizeYahooLeagueImport(
     scoringModifiers,
     teams: teams.slice(0, MAX_TEAMS_PER_LEAGUE),
     matchups: normalizeYahooMatchups(scoreboardPayload, leagueKey, currentWeek!, teamKeys),
+    draftStatus,
+    draftHistoryStatus: draftStatus === "predraft" ? "not_started" : "unavailable",
+    draftPicks: [],
   };
 }
 
@@ -416,7 +463,7 @@ export async function getYahooLeagueImports(accessToken: string): Promise<YahooL
       teamKey,
       payload: await yahooFetch(accessToken, `/team/${encodeURIComponent(teamKey)}/roster;week=${week}/players`),
     }));
-    return normalizeYahooLeagueImport(
+    const imported = normalizeYahooLeagueImport(
       metadata,
       settings,
       teamsPayload,
@@ -424,5 +471,24 @@ export async function getYahooLeagueImports(accessToken: string): Promise<YahooL
       new Map(rosterResults.map((entry) => [entry.teamKey, entry.payload])),
       ownedTeam.teamKey
     );
+    if (imported.draftStatus === "postdraft" || imported.draftStatus === "drafting") {
+      try {
+        const history = await yahooFetch(accessToken,
+          `/team/${encodeURIComponent(ownedTeam.teamKey)}/draftresults`);
+        const picks = normalizeYahooDraftResults(history, ownedTeam.teamKey);
+        if (imported.draftStatus === "postdraft" && picks.length === 0) throw new Error("yahoo_draft_payload_invalid");
+        const playerByKey = new Map(imported.teams.flatMap((team) => team.players)
+          .map((player) => [player.playerKey, player]));
+        imported.draftPicks = picks.map((pick) => {
+          const player = playerByKey.get(pick.playerKey);
+          return player ? { ...pick, playerName: player.fullName, playerPosition: player.position } : pick;
+        });
+        imported.draftHistoryStatus = "ready";
+      } catch {
+        imported.draftHistoryStatus = "unavailable";
+        imported.draftPicks = [];
+      }
+    }
+    return imported;
   });
 }

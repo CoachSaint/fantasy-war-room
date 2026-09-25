@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { getYahooAvailablePool, normalizeYahooAvailablePage, normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
+import { getYahooAvailablePool, normalizeYahooAvailablePage, normalizeYahooDraftResults, normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
 import type { YahooLeagueImport } from "../src/lib/data/yahoo";
 import { persistYahooImports } from "../src/lib/integrations/yahoo-sync";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -107,6 +107,22 @@ describe("Yahoo OAuth queue", () => {
 });
 
 describe("Yahoo provider normalization", () => {
+  it("reads only ordered picks for the authenticated team", () => {
+    const payload = { fantasy_content: { team: [{ draft_results: {
+      0: { draft_result: [{ pick: "14" }, { round: "2" }, { team_key: "449.l.123.t.4" }, { player_key: "449.p.31" }] },
+      1: { draft_result: [{ pick: "4" }, { round: "1" }, { team_key: "449.l.123.t.4" }, { player_key: "449.p.32" }] },
+    } }] } };
+    expect(normalizeYahooDraftResults(payload, "449.l.123.t.4")).toMatchObject([
+      { overallPick: 4, round: 1, playerKey: "449.p.32" },
+      { overallPick: 14, round: 2, playerKey: "449.p.31" },
+    ]);
+    const foreign = structuredClone(payload);
+    foreign.fantasy_content.team[0].draft_results[0].draft_result[2].team_key = "449.l.123.t.8";
+    expect(() => normalizeYahooDraftResults(foreign, "449.l.123.t.4"))
+      .toThrow("yahoo_draft_payload_invalid");
+    expect(() => normalizeYahooDraftResults({ fantasy_content: { team: [] } }, "449.l.123.t.4"))
+      .toThrow("yahoo_draft_payload_invalid");
+  });
   it("accepts league-available players without roster positions and rejects foreign game keys", () => {
     const page = { fantasy_content: { league: [{ players: {
       count: 2,
@@ -163,7 +179,7 @@ describe("Yahoo provider normalization", () => {
   });
 
   it("normalizes league slots, scoring, and every roster without first-team fallback", () => {
-    const metadata = { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Family League" }, { season: "2026" }, { current_week: "4" }]] } };
+    const metadata = { fantasy_content: { league: [[{ league_key: "449.l.123" }, { league_id: "123" }, { name: "Family League" }, { season: "2026" }, { current_week: "4" }, { draft_status: "postdraft" }]] } };
     const settings = { fantasy_content: { league: [{ settings: [
       { roster_positions: { 0: { roster_position: [{ position: "QB" }, { count: 1 }] }, 1: { roster_position: [{ position: "W/R/T" }, { count: 2 }] }, 2: { roster_position: [{ position: "BN" }, { count: 6 }] } } },
       { stat_categories: { stats: { 0: { stat: [{ stat_id: "4" }, { name: "Passing Yards" }] }, 1: { stat: [{ stat_id: "11" }, { name: "Receptions" }] } } } },
@@ -185,7 +201,7 @@ describe("Yahoo provider normalization", () => {
     ]);
     const imports = normalizeYahooLeagueImport(metadata, settings, teams, scoreboard, rosterPayloads, "449.l.123.t.4");
 
-    expect(imports).toMatchObject({ leagueKey: "449.l.123", season: 2026, currentWeek: 4, ownedTeamKey: "449.l.123.t.4" });
+    expect(imports).toMatchObject({ leagueKey: "449.l.123", season: 2026, currentWeek: 4, ownedTeamKey: "449.l.123.t.4", draftStatus: "postdraft", draftHistoryStatus: "unavailable" });
     expect(imports.rosterSlots.map((slot) => slot.slotType)).toEqual(["QB", "FLEX", "BENCH"]);
     expect(imports.scoringModifiers).toEqual({ "4": 0.04, "11": 0.5 });
     expect(imports.teams).toHaveLength(2);
@@ -261,6 +277,7 @@ describe("Yahoo migration security contract", () => {
   const migration = readFileSync(new URL("../supabase/migrations/0003_yahoo_integration.sql", import.meta.url), "utf8");
   const matchupMigration = readFileSync(new URL("../supabase/migrations/0004_yahoo_weekly_matchups.sql", import.meta.url), "utf8");
   const availabilityMigration = readFileSync(new URL("../supabase/migrations/0005_yahoo_available_pool.sql", import.meta.url), "utf8");
+  const draftMigration = readFileSync(new URL("../supabase/migrations/0008_yahoo_draft_history.sql", import.meta.url), "utf8");
 
   it("stores ciphertext server-side and exposes no authenticated token policy", () => {
     expect(migration).toMatch(/access_token_ciphertext text not null/);
@@ -290,5 +307,12 @@ describe("Yahoo migration security contract", () => {
     expect(matchupMigration).toMatch(/alter table public\.league_week_matchups enable row level security/);
     expect(matchupMigration).toMatch(/for select to authenticated using \(public\.can_access_league\(league_id\)\)/);
     expect(matchupMigration).not.toMatch(/for (insert|update|delete|all) to authenticated/);
+  });
+
+  it("keeps Yahoo pick history league-scoped and server-written", () => {
+    expect(draftMigration).toMatch(/create table if not exists public\.league_draft_picks/);
+    expect(draftMigration).toMatch(/alter table public\.league_draft_picks enable row level security/);
+    expect(draftMigration).toMatch(/for select to authenticated using \(public\.can_access_league\(league_id\)\)/);
+    expect(draftMigration).not.toMatch(/for (insert|update|delete|all) to authenticated/);
   });
 });

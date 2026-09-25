@@ -1,11 +1,10 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoPlayers, type ExtendedPlayer } from "@/lib/demo";
 import { PlayerCompareModal } from "@/components/player-compare-modal";
-import { ConnectedDecisions } from "@/components/connected-decisions";
 import { LeagueGate } from "@/components/league-gate";
 import { useConnectedLeague } from "@/lib/use-connected-league";
 import { ArrowUpDown, AlertCircle } from "lucide-react";
@@ -17,10 +16,68 @@ export default function DraftPage() {
   const league = useConnectedLeague();
   if (league.status === "loading") return <LeagueGate state={league} />;
   if (league.status === "connected") {
-    return <ConnectedDecisions leagueId={league.context.league.id} leagueName={league.context.league.name} eyebrow="Draft board" title="Draft decisions" description="Fresh draft recommendations from your connected league." kinds={["draft"]} />;
+    return <ConnectedDraftPage leagueId={league.context.league.id} leagueName={league.context.league.name} />;
   }
   if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
   return <DemoDraftPage />;
+}
+
+type DraftHistory = {
+  status: string;
+  draftStatus: string;
+  sourceUrl?: string;
+  picks: Array<{ overallPick: number; round: number; playerKey: string;
+    playerName: string | null; playerPosition: string | null; observedAt: string }>;
+};
+
+function ConnectedDraftPage({ leagueId, leagueName }: { leagueId: string; leagueName: string }) {
+  const [state, setState] = useState<{ status: "loading" | "unavailable" } | { status: "ready"; data: DraftHistory }>({ status: "loading" });
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/draft?leagueId=${encodeURIComponent(leagueId)}`, {
+          credentials: "same-origin", signal: controller.signal,
+        });
+        if (!response.ok) return setState({ status: "unavailable" });
+        const data = await response.json() as DraftHistory;
+        if (!Array.isArray(data.picks)) return setState({ status: "unavailable" });
+        setState({ status: "ready", data });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setState({ status: "unavailable" });
+      }
+    })();
+    return () => controller.abort();
+  }, [leagueId]);
+
+  return <>
+    <PageHeader eyebrow={`Draft room · ${leagueName}`} title="Your league draft" description="Yahoo draft status and your verified pick history appear after an authenticated import." />
+    {state.status === "loading" && <p role="status">Loading your draft history…</p>}
+    {state.status === "unavailable" && <p role="alert">Draft status is unavailable. Your roster and other league decisions remain separate.</p>}
+    {state.status === "ready" && state.data.status === "not_yahoo_league" && (
+      <section className="card"><h2 style={{ marginTop: 0 }}>Yahoo draft data is not connected</h2><p className="muted">This league was set up manually. Connect an owned Yahoo team to import its draft status and picks.</p></section>
+    )}
+    {state.status === "ready" && state.data.status !== "not_yahoo_league" && <>
+      <section className="card" style={{ marginBottom: 20 }}>
+        <h2 style={{ marginTop: 0 }}>{state.data.draftStatus === "postdraft" ? "Draft complete" : state.data.draftStatus === "drafting" ? "Draft in progress" : state.data.draftStatus === "predraft" ? "Draft not started" : "Draft status unverified"}</h2>
+        <p className="muted" style={{ marginBottom: 0 }}>The connected Draft page shows Yahoo&apos;s league state and your saved picks. A live available-player recommendation board is not available yet.</p>
+      </section>
+      <section className="card">
+        <h2 style={{ marginTop: 0 }}>Your pick history</h2>
+        {state.data.status === "unavailable" && <p role="alert">Yahoo pick history could not be verified on the last import. Any saved picks below are from an earlier successful import.</p>}
+        {state.data.status === "not_started" && <p className="muted">No picks have been made yet.</p>}
+        {state.data.status === "ready" && state.data.picks.length === 0 && <p className="muted">Yahoo has not reported a pick for your team yet.</p>}
+        {state.data.picks.length > 0 && <div style={{ display: "grid", gap: 8 }}>
+          {state.data.picks.map((pick) => <div key={pick.overallPick} style={{ display: "flex", flexWrap: "wrap", justifyContent: "space-between", gap: 8, borderTop: "1px solid var(--line)", paddingTop: 10 }}>
+            <div><strong>Pick {pick.overallPick}</strong> · Round {pick.round}<div className="muted">{pick.playerName || `Yahoo player ${pick.playerKey}`}{pick.playerPosition ? ` · ${pick.playerPosition}` : ""}</div></div>
+            <span className="muted" style={{ fontSize: 12 }}>Checked {new Date(pick.observedAt).toLocaleString()}</span>
+          </div>)}
+        </div>}
+        {state.data.sourceUrl && <a href={state.data.sourceUrl} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginTop: 16 }}>Yahoo draft source</a>}
+      </section>
+    </>}
+  </>;
 }
 
 function DemoDraftPage() {

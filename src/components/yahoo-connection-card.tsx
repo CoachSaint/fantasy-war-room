@@ -95,6 +95,8 @@ export function YahooConnectionCard() {
       }
       const leagues = typeof data.leaguesProcessed === "number" ? data.leaguesProcessed : 0;
       const rosters = typeof data.rostersProcessed === "number" ? data.rostersProcessed : 0;
+      const draftPicks = typeof data.draftPicksProcessed === "number" ? data.draftPicksProcessed : 0;
+      const draftUnavailable = typeof data.draftHistoryUnavailableLeagues === "number" ? data.draftHistoryUnavailableLeagues : 0;
       const decisions = Array.isArray(data.decisions) ? data.decisions as Record<string, unknown>[] : [];
       const evaluated = decisions.filter((item) => item.status === "evaluated").length;
       const waiting = decisions.filter((item) => item.status === "not_ready").length;
@@ -107,9 +109,12 @@ export function YahooConnectionCard() {
           : ` ${waiting} league${waiting === 1 ? "" : "s"} still need current source data or league setup before advice can appear.`
           : evaluated ? ` Current decisions checked for ${evaluated} league${evaluated === 1 ? "" : "s"}.` : "";
       const availabilityMessage = !response.ok ? " Available-player import was incomplete; waiver advice is limited." : "";
+      const draftMessage = draftUnavailable
+        ? ` Yahoo draft history could not be verified for ${draftUnavailable} completed league draft${draftUnavailable === 1 ? "" : "s"}.`
+        : draftPicks ? ` ${draftPicks} of your Yahoo draft pick${draftPicks === 1 ? "" : "s"} saved.` : "";
       await loadStatus();
       setState((previous) => ({ ...previous, connected: true,
-        message: `Yahoo import saved: ${leagues} league${leagues === 1 ? "" : "s"} and ${rosters} roster${rosters === 1 ? "" : "s"}.${availabilityMessage}${decisionMessage}` }));
+        message: `Yahoo import saved: ${leagues} league${leagues === 1 ? "" : "s"} and ${rosters} roster${rosters === 1 ? "" : "s"}.${availabilityMessage}${draftMessage}${decisionMessage}` }));
     } catch (error) {
       setState((previous) => ({ ...previous, message: error instanceof Error ? error.message : "Yahoo import failed safely." }));
     } finally {
