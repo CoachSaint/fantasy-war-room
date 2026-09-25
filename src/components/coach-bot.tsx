@@ -148,7 +148,7 @@ export function CoachBot() {
           style={{
             position: "fixed",
             right: 24,
-            bottom: 24,
+            bottom: "var(--coach-bottom)",
             zIndex: 40,
             display: "flex",
             alignItems: "center",
@@ -189,10 +189,10 @@ export function CoachBot() {
           style={{
             position: "fixed",
             right: 24,
-            bottom: 24,
+            bottom: "var(--coach-bottom)",
             zIndex: 50,
             width: "min(440px, calc(100vw - 32px))",
-            height: "min(620px, calc(100vh - 48px))",
+            height: "min(620px, calc(100vh - var(--coach-bottom) - 24px))",
             display: "flex",
             flexDirection: "column",
             borderRadius: 24,

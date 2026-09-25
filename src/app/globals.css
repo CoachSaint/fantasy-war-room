@@ -12,6 +12,7 @@
   --bad: #b42318;
   --radius-xl: 28px;
   --shadow: 0 18px 60px rgba(0, 0, 0, 0.08);
+  --coach-bottom: 24px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -85,6 +86,10 @@ button, input { font: inherit; }
   .setup-slot-row > :nth-child(3) { grid-column: 1 / -1; }
   .setup-slot-row > :nth-child(5) { justify-self: end; }
   .setup-team-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1200px) {
+  :root { --coach-bottom: 108px; }
 }
 
 @media (max-width: 560px) { .nav-label { display: none; } }
