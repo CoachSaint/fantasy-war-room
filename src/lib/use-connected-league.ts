@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { selectPrimaryMembership } from "@/lib/select-primary-membership";
+import { activeConnectedMembership } from "@/lib/active-connected-membership";
 
 export type ConnectedLeague = {
   league: { id: string; name: string; provider: string; season: number; currentWeek: number; scoringRuleCount: number; receptionPoints: number | null; rosterSlots: string[] };
@@ -24,15 +24,16 @@ export function useConnectedLeague(): LeagueState {
         if (response.status === 401) return setState({ status: "auth_required" });
         if (!response.ok) return setState({ status: "unavailable" });
         const body: unknown = await response.json();
-        if (!body || typeof body !== "object" || !("data" in body)) return setState({ status: "unavailable" });
-        const data = (body as { data?: { memberships?: unknown; activeLeagueId?: unknown } }).data;
-        const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
-        const selectedLeagueId = typeof data?.activeLeagueId === "string" ? data.activeLeagueId : null;
-        const primary = selectPrimaryMembership(memberships, selectedLeagueId);
-        if (!primary?.league?.id) return setState({ status: "setup_required" });
-        const scoring = primary.league.scoring;
+        if (body && typeof body === "object" && "setupRequired" in body && body.setupRequired === true) {
+          return setState({ status: "setup_required" });
+        }
+        const primary = activeConnectedMembership(body);
+        if (!primary) return setState({ status: "unavailable" });
+        const activeLeague = primary.league as Record<string, unknown>;
+        const activeRoster = primary.roster as Record<string, unknown>;
+        const scoring = activeLeague.scoring;
         const modifiers = scoring && typeof scoring === "object" && !Array.isArray(scoring)
-          ? scoring.statModifiers : null;
+          ? (scoring as Record<string, unknown>).statModifiers : null;
         const rules = modifiers && typeof modifiers === "object" && !Array.isArray(modifiers)
           ? modifiers as Record<string, unknown> : {};
         const receptionValue = Number(rules["11"]);
@@ -41,13 +42,13 @@ export function useConnectedLeague(): LeagueState {
           : [];
         setState({ status: "connected", context: {
           league: {
-            id: String(primary.league.id), name: String(primary.league.name), provider: String(primary.league.provider || "manual"),
-            season: Number(primary.league.season), currentWeek: Number(primary.league.currentWeek),
+            id: String(activeLeague.id), name: String(activeLeague.name), provider: String(activeLeague.provider || "manual"),
+            season: Number(activeLeague.season), currentWeek: Number(activeLeague.currentWeek),
             scoringRuleCount: Object.keys(rules).length,
             receptionPoints: rules["11"] == null || !Number.isFinite(receptionValue) ? null : receptionValue,
             rosterSlots: slots,
           },
-          roster: primary.roster?.id ? { id: String(primary.roster.id), name: primary.roster.name ? String(primary.roster.name) : null } : null,
+          roster: { id: String(activeRoster.id), name: activeRoster.name ? String(activeRoster.name) : null },
         } });
       } catch (error) {
         if (error instanceof DOMException && error.name === "AbortError") return;

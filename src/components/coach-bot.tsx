@@ -2,6 +2,7 @@
 
 import { useState, useRef, useEffect } from "react";
 import { Bot, Send, Sparkles, Minimize2, Cpu, RefreshCw } from "lucide-react";
+import { activeConnectedMembership } from "@/lib/active-connected-membership";
 
 let messageSequence = 0;
 const nextMessageId = (prefix: string) => `${prefix}-${++messageSequence}`;
@@ -92,14 +93,15 @@ export function CoachBot() {
       let coachContext: { demo: true } | { leagueId: string } | null = null;
       const contextResponse = await fetch("/api/context", { credentials: "same-origin" });
       if (contextResponse.ok) {
-        const contextBody = await contextResponse.json() as { data?: { memberships?: Array<{ membership?: { isPrimary?: boolean }; league?: { id?: unknown }; leagueId?: unknown }> } };
-        const memberships = contextBody.data?.memberships || [];
-        const membership = memberships.find((entry) => entry.membership?.isPrimary) || memberships[0];
-        const candidate = membership?.league?.id ?? membership?.leagueId;
-        if (typeof candidate === "string" && candidate) coachContext = { leagueId: candidate };
+        const contextBody: unknown = await contextResponse.json();
+        const membership = activeConnectedMembership(contextBody);
+        const league = membership?.league;
+        if (league && typeof league === "object" && "id" in league && typeof league.id === "string") {
+          coachContext = { leagueId: league.id };
+        }
       }
       if (!coachContext && process.env.NEXT_PUBLIC_DEMO_MODE === "true"
-        && (contextResponse.ok || contextResponse.status === 401)) coachContext = { demo: true };
+        && contextResponse.status === 401) coachContext = { demo: true };
       if (!coachContext) throw new Error("league_context_unavailable");
 
       const res = await fetch("/api/coach/chat", {
