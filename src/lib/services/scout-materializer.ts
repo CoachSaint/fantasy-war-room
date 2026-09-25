@@ -229,6 +229,7 @@ export async function materializeSleeperProjections(
   client: SupabaseClient,
   projections: SleeperWeeklyProjection[],
   sleeperToGsis: Map<string, string>,
+  period: "week" | "season" = "week",
 ): Promise<ProjectionMaterializationResult> {
   const gsisIds = [...new Set(projections.map((item) => sleeperToGsis.get(item.sleeperId)).filter((id): id is string => Boolean(id)))];
   const canonicalByGsis = new Map<string, string>();
@@ -252,6 +253,8 @@ export async function materializeSleeperProjections(
       const fingerprint = createHash("sha256").update(JSON.stringify({
         sleeperId: item.sleeperId, season: item.season, week: item.week,
         ppr: item.ppr, halfPpr: item.halfPpr, standard: item.standard, stats: item.stats,
+        ...(period === "season" ? { seasonOnly: true, adpPpr: item.adpPpr,
+          adpHalfPpr: item.adpHalfPpr, adpStandard: item.adpStandard } : {}),
       })).digest("hex");
       return { item, playerId, fingerprint };
     });
@@ -265,10 +268,12 @@ export async function materializeSleeperProjections(
         projectedFantasyPointsHalfPpr: item.halfPpr,
         projectedFantasyPointsStandard: item.standard,
         projectedStats: item.stats,
+        ...(period === "season" ? { adpPpr: item.adpPpr, adpHalfPpr: item.adpHalfPpr,
+          adpStandard: item.adpStandard } : {}),
         projectionAccuracyVerified: false,
       },
       observed_at: item.observedAt,
-      source: "sleeper_weekly_projections",
+      source: period === "season" ? "sleeper_season_projections" : "sleeper_weekly_projections",
       fingerprint,
     })), { onConflict: "source,fingerprint", ignoreDuplicates: true }).select("id");
     if (snapshots.error) throw new ScoutMaterializationError("projection_snapshot_write_failed");
@@ -277,13 +282,15 @@ export async function materializeSleeperProjections(
     const evidence = await client.from("evidence").upsert(rows.map(({ item, playerId, fingerprint }) => ({
       player_id: playerId,
       type: "projection",
-      source: "sleeper_weekly_projections",
-      source_url: `https://api.sleeper.app/v1/projections/nfl/regular/${item.season}/${item.week}`,
-      summary: `Sleeper Week ${item.week} forecast: standard ${item.standard ?? "unavailable"}, half PPR ${item.halfPpr ?? "unavailable"}, PPR ${item.ppr ?? "unavailable"} points. Forecast accuracy has not been verified.`,
+      source: period === "season" ? "sleeper_season_projections" : "sleeper_weekly_projections",
+      source_url: period === "season"
+        ? `https://api.sleeper.app/v1/projections/nfl/regular/${item.season}`
+        : `https://api.sleeper.app/v1/projections/nfl/regular/${item.season}/${item.week}`,
+      summary: `Sleeper ${period === "season" ? "full-season" : `Week ${item.week}`} forecast: standard ${item.standard ?? "unavailable"}, half PPR ${item.halfPpr ?? "unavailable"}, PPR ${item.ppr ?? "unavailable"} points. Forecast accuracy has not been verified.`,
       confidence: 100,
       published_at: null,
       observed_at: item.observedAt,
-      fingerprint: `sleeper_projection_${fingerprint}`,
+      fingerprint: `${period === "season" ? "sleeper_season_projection" : "sleeper_projection"}_${fingerprint}`,
       metadata: { confidenceMeaning: "exact_source_transcription", projectionAccuracyVerified: false },
     })), { onConflict: "fingerprint", ignoreDuplicates: true }).select("id");
     if (evidence.error) throw new ScoutMaterializationError("projection_evidence_write_failed");

@@ -223,6 +223,26 @@ async function handleScoutRun(request: Request) {
     sourceWeeks: outlookMaterializedWeeks,
   });
 
+  const seasonProjectionStart = Date.now();
+  try {
+    const seasonProjections = await sleeper.getSeasonProjections(input.season);
+    if (!seasonProjections.length || !crosswalk.sleeperIds.size) {
+      steps.push(step("season_projection_ingestion", "skipped", seasonProjectionStart, 0,
+        seasonProjections.length ? "projection_crosswalk_unavailable" : "season_projection_provider_unavailable"));
+    } else {
+      const result = await materializeSleeperProjections(adminClient, seasonProjections, crosswalk.sleeperIds, "season");
+      steps.push({ ...step("season_projection_ingestion", result.projectionsMapped ? "success" : "skipped",
+        seasonProjectionStart, result.snapshotsInserted,
+        result.projectionsMapped ? undefined : "season_projection_identities_unmatched"),
+        unmappedRecords: result.projectionsUnmapped });
+    }
+  } catch {
+    // The observed season endpoint is optional. Draft uses only rows whose
+    // source and exact player identity were actually persisted.
+    steps.push(step("season_projection_ingestion", "skipped", seasonProjectionStart, 0,
+      "season_projection_provider_unavailable"));
+  }
+
   const scoringStart = Date.now();
   const syncStart = Date.now();
   let recommendationsMaterialized = 0;

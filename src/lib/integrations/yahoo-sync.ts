@@ -172,8 +172,9 @@ export async function persistYahooAvailablePool(
   const scanId = randomUUID();
   for (let offset = 0; offset < pool.players.length; offset += 100) {
     const batch = pool.players.slice(offset, offset + 100);
-    const rows = batch.map((player) => ({
+    const rows = batch.map((player, index) => ({
       league_id: leagueId, scan_id: scanId, player_id: ids.get(player.playerKey), provider_player_key: player.playerKey,
+      provider_order: offset + index + 1,
       provider_status: player.status || null,
       observed_at: pool.observedAt, fresh_until: freshUntil,
     }));
@@ -185,7 +186,7 @@ export async function persistYahooAvailablePool(
   const scan = await client.from("league_available_scans").upsert({
     league_id: leagueId, scan_id: scanId, observed_at: pool.observedAt, fresh_until: freshUntil,
     candidates_count: pool.players.length, truncated: pool.truncated,
-    source_url: `https://fantasysports.yahooapis.com/fantasy/v2/league/${pool.leagueKey}/players;status=A`,
+    source_url: `https://fantasysports.yahooapis.com/fantasy/v2/league/${pool.leagueKey}/players;status=A;sort=OR`,
   }, { onConflict: "league_id" });
   if (scan.error) throw new YahooSyncError(scan.error.code === "42P01" ? "yahoo_availability_migration_required" : "yahoo_available_scan_write_failed");
   const cleanup = await client.from("league_available_players").delete()

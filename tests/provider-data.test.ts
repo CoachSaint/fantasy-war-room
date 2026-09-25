@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { parseSleeperWeeklyProjections, sleeper } from "../src/lib/data/sleeper";
+import { parseSleeperSeasonProjections, parseSleeperWeeklyProjections, sleeper } from "../src/lib/data/sleeper";
 import {
   nflverse,
   nflverseReleaseAssetUrl,
@@ -23,6 +23,19 @@ describe("provider identity and availability", () => {
       invalid: { pts_ppr: 12 },
     }, 2026, 3, "2026-09-24T20:00:00.000Z");
     expect(rows).toEqual([{ sleeperId: "96", season: 2026, week: 3, ppr: 14.09, halfPpr: 14.09, standard: 14.09, stats: { pass_yd: 218.97 }, observedAt: "2026-09-24T20:00:00.000Z" }]);
+  });
+  it("keeps full-season forecasts separate from ADP-only rows and weekly points", () => {
+    const rows = parseSleeperSeasonProjections({
+      "8138": { pts_ppr: 260.8, pts_half_ppr: 245.3, pts_std: 229.8,
+        rush_yd: 1270, rush_td: 11, rec: 31, adp_ppr: 9.2 },
+      "19": { adp_ppr: 1000 },
+      "20": { pts_ppr: 280, adp_ppr: 5 },
+    }, 2026, "2026-09-25T00:00:00.000Z");
+    expect(rows).toEqual([{ sleeperId: "8138", season: 2026, week: 0,
+      ppr: 260.8, halfPpr: 245.3, standard: 229.8,
+      stats: { rush_yd: 1270, rush_td: 11, rec: 31 },
+      observedAt: "2026-09-25T00:00:00.000Z",
+      adpPpr: 9.2, adpHalfPpr: null, adpStandard: null }]);
   });
   const league = {
     league_id: "league-1",
