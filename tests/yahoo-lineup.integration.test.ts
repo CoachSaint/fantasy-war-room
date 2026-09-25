@@ -32,6 +32,7 @@ describe("Yahoo lineup hosted database integration", () => {
     const workspaceId = randomUUID();
     const leagueId = randomUUID();
     const rosterId = randomUUID();
+    const opponentRosterId = randomUUID();
     const connectionId = randomUUID();
     const starterId = randomUUID();
     const benchId = randomUUID();
@@ -72,9 +73,11 @@ describe("Yahoo lineup hosted database integration", () => {
         name: "Disposable lineup integration fixture", season: 2026, current_week: 3,
         scoring: { statModifiers: { "9": 0.1, "10": 6 } },
       })).error);
-      checked("insert roster", (await client.from("rosters").insert({
-        id: rosterId, league_id: leagueId, owner_user_id: userId, provider_roster_id: `fixture-${runId}`,
-      })).error);
+      checked("insert rosters", (await client.from("rosters").insert([
+        { id: rosterId, league_id: leagueId, owner_user_id: userId,
+          provider_roster_id: `fixture-${runId}`, current_faab: 72 },
+        { id: opponentRosterId, league_id: leagueId, provider_roster_id: `fixture-opponent-${runId}` },
+      ])).error);
       checked("insert membership", (await client.from("league_memberships").insert({
         league_id: leagueId, user_id: userId, roster_id: rosterId,
       })).error);
@@ -160,6 +163,7 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(waiverRows.data?.[0]).toMatchObject({ subject_player_id: availableId, alternative_player_id: benchId,
         evidence_ids: [availableEvidenceId, benchEvidenceId], payload: {
           availabilityTruncated: false,
+          faabRange: { version: "faab-range-v1", model: "heuristic_no_bid_history", remainingBalance: 72 },
           forecastOutlookWeeksRequested: [3, 4, 5],
           forecastOutlook: [
             { week: 3, addPoints: 15, dropPoints: 10, edge: 5 },
@@ -204,7 +208,9 @@ describe("Yahoo lineup hosted database integration", () => {
       const ownerWaivers = await getRecommendations(new Request(`http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=add`,
         { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerWaivers.status).toBe(200);
-      expect(await ownerWaivers.json()).toMatchObject({ data: [{ forecastOutlook: {
+      expect(await ownerWaivers.json()).toMatchObject({ data: [{
+        faabRange: { version: "faab-range-v1", remainingBalance: 72 },
+        forecastOutlook: {
         requestedWeeks: [3, 4, 5], weeks: [{ week: 3 }, { week: 4 }, { week: 5 }],
       } }] });
 

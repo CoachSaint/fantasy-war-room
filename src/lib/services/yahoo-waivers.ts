@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { SleeperWeeklyProjection } from "@/lib/data/sleeper";
 import { scoreYahooOffenseProjection } from "@/lib/engine/yahoo-projection";
+import { calculateWaiverBidRange } from "@/lib/services/waiver-bid";
 
 const engineVersion = "war-v0.1-yahoo-waiver";
 const blockedStatus = /\b(out|ir|doubtful|suspended|inactive)\b/i;
@@ -83,11 +84,12 @@ export async function materializeYahooWaiversForLeague(
   const members = (memberships.data || []).filter((row) => row.roster_id);
   if (!members.length) return skipped("owned_roster_unavailable");
   const rosterIds = members.map((row) => String(row.roster_id));
-  const [rosters, assignments, leagueAssignments] = await Promise.all([
-    client.from("rosters").select("id, updated_at").eq("league_id", leagueId).in("id", rosterIds),
+  const [rosters, assignments, leagueAssignments, rosterCount] = await Promise.all([
+    client.from("rosters").select("id, updated_at, current_faab").eq("league_id", leagueId).in("id", rosterIds),
     client.from("roster_assignments").select("roster_id, player_id, designation")
       .eq("league_id", leagueId).in("roster_id", rosterIds).limit(1001),
     client.from("roster_assignments").select("player_id").eq("league_id", leagueId).limit(2001),
+    client.from("rosters").select("id", { count: "exact", head: true }).eq("league_id", leagueId),
   ]);
   if (rosters.error || assignments.error || leagueAssignments.error) throw new YahooWaiverError("waiver_roster_unavailable");
   if ((assignments.data || []).length > 1000 || (leagueAssignments.data || []).length > 2000) {
@@ -95,6 +97,8 @@ export async function materializeYahooWaiversForLeague(
   }
   if ((rosters.data || []).length !== rosterIds.length) return skipped("owned_roster_unavailable");
   const rosterSyncedAt = new Map((rosters.data || []).map((row) => [String(row.id), new Date(String(row.updated_at)).getTime()]));
+  const faabByRoster = new Map((rosters.data || []).map((row) => [String(row.id), row.current_faab]));
+  const teamCount = rosterCount.error ? 0 : Number(rosterCount.count);
   if ([...rosterSyncedAt.values()].some((time) => !Number.isFinite(time)
     || time > asOf.getTime() + 5 * 60_000 || time + rosterAgeMs <= asOf.getTime())) {
     return skipped("yahoo_roster_sync_stale");
@@ -179,6 +183,29 @@ export async function materializeYahooWaiversForLeague(
       rosterRecommendations += 1;
       const edge = Math.round(pair.edge * 100) / 100;
       const assumptions = [...new Set([...pair.candidate.assumedZeroStatIds, ...pair.drop.assumedZeroStatIds])];
+      const remainingFaab = Number(faabByRoster.get(rosterId));
+      let faabRange: { version: string; minimumPercent: number; recommendedPercent: number;
+        maximumPercent: number; remainingBalance: number; observedAt: string;
+        model: "heuristic_no_bid_history" } | null = null;
+      if (!scan.data.truncated && Number.isInteger(remainingFaab) && remainingFaab > 0
+        && Number.isInteger(teamCount) && teamCount >= 2 && teamCount <= 32 && week >= 0 && week <= 18) {
+        const positionCandidates = candidates.filter((candidate) =>
+          String(playersById.get(String(candidate.player_id))?.position) === pair.candidate.position).length;
+        const bid = calculateWaiverBidRange({
+          league: { teamCount, week },
+          budget: { remaining: remainingFaab },
+          player: { score: Math.min(100, Math.round(50 + edge * 5)), confidence: Math.max(35, 60 - assumptions.length * 5) / 100 },
+          needScore: Math.min(100, Math.round(edge / Math.max(pair.drop.points, 1) * 100)),
+          scarcityScore: Math.round(100 / (1 + positionCandidates)),
+        });
+        faabRange = { version: bid.version,
+          minimumPercent: Number((bid.minimum / remainingFaab * 100).toFixed(1)),
+          recommendedPercent: Number((bid.recommended / remainingFaab * 100).toFixed(1)),
+          maximumPercent: Number((bid.maximum / remainingFaab * 100).toFixed(1)),
+          remainingBalance: remainingFaab,
+          observedAt: new Date(rosterSyncedAt.get(rosterId)!).toISOString(),
+          model: "heuristic_no_bid_history" };
+      }
       const forecastOutlook = forecastWeeks.flatMap((forecastWeek) => {
         const forecastCandidate = scoredByWeek.get(forecastWeek)?.get(pair.candidate.id);
         const forecastDrop = scoredByWeek.get(forecastWeek)?.get(pair.drop.id);
@@ -196,7 +223,8 @@ export async function materializeYahooWaiversForLeague(
         confidence: Math.max(35, 60 - assumptions.length * 5),
         headline: `Consider adding ${pair.candidate.name} and dropping ${pair.drop.name} (Week ${week} forecast edge ${edge} points)`,
         reason_codes: ["YAHOO_LEAGUE_AVAILABLE", "SAME_POSITION_BENCH_UPGRADE", "CURRENT_WEEK_FORECAST_ONLY",
-          ...(assumptions.length ? ["MISSING_STAT_PROJECTION_ASSUMED_ZERO"] : [])],
+          ...(assumptions.length ? ["MISSING_STAT_PROJECTION_ASSUMED_ZERO"] : []),
+          ...(faabRange ? ["FAAB_HEURISTIC_NO_BID_HISTORY"] : [])],
         evidence_ids: [pair.candidate.evidenceId, pair.drop.evidenceId], engine_version: engineVersion,
         computed_at: asOf.toISOString(),
         fresh_until: new Date(Math.min(scanFreshUntil, rosterSyncedAt.get(rosterId)! + rosterAgeMs,
@@ -211,7 +239,8 @@ export async function materializeYahooWaiversForLeague(
           assumedZeroYahooStatIds: assumptions,
           forecastOutlook,
           forecastOutlookWeeksRequested: forecastWeeks,
-          scope: "current_week_bench_upgrade_with_source_backed_outlook_no_faab_or_ros_claim",
+          ...(faabRange ? { faabRange } : {}),
+          scope: "current_week_bench_upgrade_with_source_backed_outlook_no_ros_claim",
         },
       });
     }

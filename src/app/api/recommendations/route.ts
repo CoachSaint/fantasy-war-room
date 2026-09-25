@@ -21,6 +21,17 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     ? payload.projectedPoints as Record<string, unknown> : null;
   const availabilitySourceUrl = typeof payload.availabilitySourceUrl === "string" ? payload.availabilitySourceUrl : "";
   const validAvailabilityUrl = availabilitySourceUrl.startsWith("https://fantasysports.yahooapis.com/fantasy/v2/league/");
+  const faab = payload.faabRange && typeof payload.faabRange === "object" && !Array.isArray(payload.faabRange)
+    ? payload.faabRange as Record<string, unknown> : null;
+  const validFaab = faab?.version === "faab-range-v1" && faab.model === "heuristic_no_bid_history"
+    && typeof faab.minimumPercent === "number" && typeof faab.recommendedPercent === "number"
+    && typeof faab.maximumPercent === "number" && typeof faab.remainingBalance === "number"
+    && Number.isFinite(faab.minimumPercent) && Number.isFinite(faab.recommendedPercent)
+    && Number.isFinite(faab.maximumPercent) && Number.isFinite(faab.remainingBalance)
+    && faab.minimumPercent >= 0 && faab.minimumPercent <= faab.recommendedPercent
+    && faab.recommendedPercent <= faab.maximumPercent && faab.maximumPercent <= 100
+    && faab.remainingBalance > 0 && typeof faab.observedAt === "string"
+    && Number.isFinite(Date.parse(faab.observedAt));
   const requestedWeeks = Array.isArray(payload.forecastOutlookWeeksRequested)
     ? payload.forecastOutlookWeeksRequested.filter((week): week is number =>
       typeof week === "number" && Number.isInteger(week) && week >= 0 && week <= 23).slice(0, 3)
@@ -59,6 +70,14 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     ...(validAvailabilityUrl && typeof payload.availabilityObservedAt === "string" && Number.isFinite(Date.parse(payload.availabilityObservedAt))
       ? { availability: { sourceUrl: availabilitySourceUrl, observedAt: payload.availabilityObservedAt,
           truncated: payload.availabilityTruncated === true } } : {}),
+    ...(validFaab && faab ? { faabRange: {
+      version: "faab-range-v1", model: "heuristic_no_bid_history" as const,
+      minimumPercent: faab.minimumPercent as number,
+      recommendedPercent: faab.recommendedPercent as number,
+      maximumPercent: faab.maximumPercent as number,
+      remainingBalance: faab.remainingBalance as number,
+      observedAt: faab.observedAt as string,
+    } } : {}),
     ...(requestedWeeks.length && forecastWeeks.length
       ? { forecastOutlook: { requestedWeeks, weeks: forecastWeeks } } : {}),
     headline: String(row.headline),

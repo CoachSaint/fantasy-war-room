@@ -99,6 +99,8 @@ export interface Recommendation {
   confidenceMeaning?: "heuristic_source_coverage_not_outcome_probability";
   projectedPoints?: { recommended: number; current: number };
   availability?: { sourceUrl: string; observedAt: string; truncated: boolean };
+  faabRange?: { version: string; minimumPercent: number; recommendedPercent: number; maximumPercent: number;
+    remainingBalance: number; observedAt: string; model: "heuristic_no_bid_history" };
   forecastOutlook?: {
     requestedWeeks: number[];
     weeks: Array<{ week: number; addPoints: number; dropPoints: number; edge: number; observedAt: string;

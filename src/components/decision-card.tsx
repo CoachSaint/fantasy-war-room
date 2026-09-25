@@ -92,6 +92,14 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
         </div>
       </div>
 
+      {item.kind === "add" && item.faabRange && (
+        <div style={{ padding: 12, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--line)", fontSize: 12.5 }}>
+          <strong>Estimated FAAB: {item.faabRange.minimumPercent.toFixed(1)}–{item.faabRange.maximumPercent.toFixed(1)}% of remaining balance</strong>
+          <div className="muted">Center estimate {item.faabRange.recommendedPercent.toFixed(1)}%; balance {item.faabRange.remainingBalance} last synced {new Date(item.faabRange.observedAt).toLocaleString()}.</div>
+          <div className="muted">Heuristic based on this add/drop edge and available alternatives. League bid history is unavailable.</div>
+        </div>
+      )}
+
       {/* Confidence & Evidence Footer */}
       <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, alignItems: "center" }}>
