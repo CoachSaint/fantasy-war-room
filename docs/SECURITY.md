@@ -7,6 +7,7 @@
 | `/api/health` | Operational status only; do not treat `200` as proof of league readiness |
 | `/api/recommendations?demo=true` | Explicit fixture response with `demo: true`; no league auth is implied |
 | `/api/recommendations?leagueId=...` | Requires Supabase credentials, authenticated bearer/cookie identity, and membership/owner access for that league |
+| `/api/brief?leagueId=...` | Requires authenticated bearer/cookie identity and league membership; returns only the signed-in user's brief |
 | `/api/leagues/setup` | Requires Supabase credentials and authenticated Supabase identity; validates and persists only canonical setup data |
 | `/api/integrations/yahoo/start` | Authenticated redirect only; user-bound cryptographic state in a short-lived HttpOnly/SameSite cookie |
 | `/api/integrations/yahoo/callback` | Requires the same authenticated app session and exact user-bound state; exchanges the code server-side, participates in the connection version lock, and stores AES-256-GCM ciphertext only |

@@ -8,6 +8,7 @@ import { LeagueGate } from "@/components/league-gate";
 import { demoRecommendations, demoWhatChangedToday } from "@/lib/demo";
 import { useConnectedLeague } from "@/lib/use-connected-league";
 import type { Evidence, Recommendation } from "@/lib/types";
+import type { BriefChange } from "@/lib/engine/daily-brief";
 import { Clock, RefreshCw, Flame } from "lucide-react";
 
 export default function TodayPage() {
@@ -25,6 +26,10 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
     | { status: "loading" }
     | { status: "unavailable" }
     | { status: "ready"; recommendations: Recommendation[]; evidence: Evidence[]; checkedAt: number }
+  >({ status: "loading" });
+  const [brief, setBrief] = useState<
+    | { status: "loading" | "unavailable" | "not_ready" }
+    | { status: "ready"; stale: boolean; computedAt: string; baselineAt: string | null; changes: BriefChange[] }
   >({ status: "loading" });
   const [clock, setClock] = useState<number | null>(null);
 
@@ -52,6 +57,29 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
     return () => controller.abort();
   }, [leagueId]);
 
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/brief?leagueId=${encodeURIComponent(leagueId)}`, { credentials: "same-origin", signal: controller.signal });
+        if (!response.ok) return setBrief({ status: "unavailable" });
+        const body: unknown = await response.json();
+        if (!body || typeof body !== "object") return setBrief({ status: "unavailable" });
+        const value = body as { status?: string; data?: { computedAt?: string; payload?: { baseline?: { computedAt?: string }; changes?: BriefChange[] } } };
+        if (value.status === "not_ready") return setBrief({ status: "not_ready" });
+        if (!value.data || typeof value.data.computedAt !== "string" || !Array.isArray(value.data.payload?.changes)) {
+          return setBrief({ status: "unavailable" });
+        }
+        setBrief({ status: "ready", stale: value.status === "stale", computedAt: value.data.computedAt,
+          baselineAt: value.data.payload?.baseline?.computedAt || null, changes: value.data.payload.changes });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setBrief({ status: "unavailable" });
+      }
+    })();
+    return () => controller.abort();
+  }, [leagueId]);
+
   const fresh = state.status === "ready"
     ? state.recommendations.filter((recommendation) => new Date(recommendation.freshUntil).getTime() > (clock ?? state.checkedAt))
     : [];
@@ -69,7 +97,33 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
               {fresh.slice(0, 3).map((item) => <DecisionCard key={item.id} item={item} evidence={state.evidence} />)}
             </section>
           )}
-          <p className="muted" style={{ marginTop: 24 }}>A daily change brief is pending a successful Scout materialization. Earlier or stale recommendations are not presented as current.</p>
+          <section className="card" style={{ marginTop: 24 }}>
+            <h2 style={{ marginTop: 0 }}>What changed since the previous brief?</h2>
+            {brief.status === "loading" && <p role="status">Loading the decision change brief…</p>}
+            {brief.status === "unavailable" && <p role="alert">The decision change brief is unavailable.</p>}
+            {brief.status === "not_ready" && <p className="muted">No connected brief has been materialized yet.</p>}
+            {brief.status === "ready" && (
+              <>
+                <p className="muted">Computed {new Date(brief.computedAt).toLocaleString()}{brief.stale ? " · Stale; refresh before acting" : ""}.</p>
+                {!brief.baselineAt ? (
+                  <p className="muted">First brief saved. A comparison will appear after the next Scout run.</p>
+                ) : brief.changes.length === 0 ? (
+                  <p className="muted">No materialized decision changes since {new Date(brief.baselineAt).toLocaleString()}.</p>
+                ) : (
+                  <div style={{ display: "grid", gap: 10 }}>
+                    {brief.changes.map((change, index) => (
+                      <div key={`${change.kind}-${change.action.subjectPlayerId}-${index}`} style={{ padding: 12, border: "1px solid var(--line)", borderRadius: 12 }}>
+                        <strong>{change.kind === "new_action" ? "New action" : change.kind === "removed_action" ? "No longer in the current brief" : "Priority changed"}</strong>
+                        <div>{change.action.headline}</div>
+                        {change.kind === "priority_changed" && <div className="muted">Priority index {change.previousScore} → {change.action.score}</div>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <p className="muted" style={{ marginBottom: 0 }}>This brief tracks materialized recommendation changes. Injury and waiver deltas are not yet included.</p>
+              </>
+            )}
+          </section>
         </>
       )}
     </>

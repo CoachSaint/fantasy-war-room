@@ -15,6 +15,10 @@ const querySchema = z.object({
 });
 
 function formatRecommendation(row: Record<string, unknown>): Recommendation {
+  const payload = row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+    ? row.payload as Record<string, unknown> : {};
+  const projectedPoints = payload.projectedPoints && typeof payload.projectedPoints === "object" && !Array.isArray(payload.projectedPoints)
+    ? payload.projectedPoints as Record<string, unknown> : null;
   return {
     id: String(row.id),
     kind: row.kind as Recommendation["kind"],
@@ -22,6 +26,10 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     alternativePlayerId: row.alternative_player_id ? String(row.alternative_player_id) : undefined,
     score: Number(row.score),
     confidence: Number(row.confidence),
+    ...(payload.confidenceMeaning === "heuristic_source_coverage_not_outcome_probability"
+      ? { confidenceMeaning: payload.confidenceMeaning } : {}),
+    ...(projectedPoints && Number.isFinite(projectedPoints.recommended) && Number.isFinite(projectedPoints.current)
+      ? { projectedPoints: { recommended: Number(projectedPoints.recommended), current: Number(projectedPoints.current) } } : {}),
     headline: String(row.headline),
     reasonCodes: Array.isArray(row.reason_codes) ? row.reason_codes.map(String) : [],
     evidenceIds: Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : [],
@@ -54,7 +62,7 @@ export async function GET(request: Request) {
   try {
     let query = access.auth.adminClient
       .from("recommendations")
-      .select("id, kind, subject_player_id, alternative_player_id, score, confidence, headline, reason_codes, evidence_ids, computed_at, fresh_until, engine_version")
+      .select("id, kind, subject_player_id, alternative_player_id, score, confidence, headline, reason_codes, evidence_ids, computed_at, fresh_until, engine_version, payload")
       .eq("league_id", leagueId)
       .or(`user_id.is.null,user_id.eq.${access.auth.user.id}`)
       .order("score", { ascending: false })

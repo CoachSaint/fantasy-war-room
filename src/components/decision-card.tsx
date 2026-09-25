@@ -61,7 +61,9 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
           <div className="score" style={{ color: item.score >= 85 ? "var(--good)" : "var(--warn)" }}>
             {item.score}
           </div>
-          <div className="muted" style={{ fontSize: 11, fontWeight: 600 }}>WAR SCORE</div>
+          <div className="muted" style={{ fontSize: 11, fontWeight: 600 }}>
+            {item.confidenceMeaning ? "HEURISTIC PRIORITY" : "WAR SCORE"}
+          </div>
         </div>
       </div>
 
@@ -95,7 +97,11 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, alignItems: "center" }}>
           <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
             <ShieldCheck size={14} style={{ color: "var(--good)" }} />
-            <strong>{item.confidence}%</strong> confidence
+            {item.confidenceMeaning ? (
+              <span><strong>{item.confidence}/100</strong> evidence coverage estimate</span>
+            ) : (
+              <span><strong>{item.confidence}%</strong> confidence</span>
+            )}
           </span>
           <button
             type="button"
@@ -134,6 +140,12 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
             <div style={{ fontWeight: 700, display: "flex", alignItems: "center", gap: 6 }}>
               <Info size={13} /> Evidence Trail (Engine v0.1)
             </div>
+            {item.confidenceMeaning && (
+              <div className="muted">This coverage estimate is a heuristic, not a measured chance of success.</div>
+            )}
+            {item.projectedPoints && (
+              <div className="muted">Week forecast under imported league scoring: {item.projectedPoints.recommended.toFixed(1)} vs {item.projectedPoints.current.toFixed(1)} points.</div>
+            )}
             {itemEvidences.length > 0 ? (
               itemEvidences.map((ev) => (
                 <div key={ev.id} style={{ borderLeft: "2px solid var(--good)", paddingLeft: 8 }}>

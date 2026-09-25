@@ -95,6 +95,9 @@ export interface Recommendation {
   alternativePlayerId?: string;
   score: number;
   confidence: number;
+  /** Present when the number describes evidence coverage rather than a calibrated outcome probability. */
+  confidenceMeaning?: "heuristic_source_coverage_not_outcome_probability";
+  projectedPoints?: { recommended: number; current: number };
   headline: string;
   reasonCodes: string[];
   evidenceIds: string[];
