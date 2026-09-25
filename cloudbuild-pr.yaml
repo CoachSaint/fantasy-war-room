@@ -9,8 +9,8 @@
 # platform to the exact PR head SHA — this config never calls `gh`, never
 # reads a GitHub token, and never writes a status of its own.
 #
-# Adding this file makes no trigger, repository connection, or
-# branch-protection change — it is inert until an operator wires it up.
+# The PR trigger is connected externally. This file itself never changes
+# repository connection, IAM, or branch protection.
 #
 # Both $COMMIT_SHA and $REPO_FULL_NAME below are Cloud Build BUILT-IN
 # substitutions (REPO_FULL_NAME is populated automatically for 2nd-gen
@@ -22,7 +22,7 @@
 # No browser-driven tests exist in this repo (vitest environment is "node",
 # no playwright/puppeteer/testing-library in package.json) — confirmed by
 # reading vitest.config.mjs and package.json before authoring this file. A
-# plain node:20 image is therefore sufficient; no Chromium-capable step is
+# plain node:22 image is therefore sufficient; no Chromium-capable step is
 # needed.
 
 steps:
@@ -38,7 +38,7 @@ steps:
         bash scripts/ci-local/cloudbuild-config.selftest.sh
 
   - id: full-ci
-    name: 'node:20'
+    name: 'node:22'
     entrypoint: bash
     args:
       - -c

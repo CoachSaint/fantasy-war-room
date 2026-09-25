@@ -7,7 +7,7 @@ require_node_major() {
   local actual
   actual="$(node -e 'console.log(process.versions.node.split(".")[0])')"
   if [ "$actual" != "$required" ]; then
-    echo "REFUSING: .github/workflows/ci.yml pins Node ${required}, this shell has Node ${actual} ($(node -v)). A pass on the wrong Node is not proof of anything — install/activate Node ${required} first." >&2
+    echo "REFUSING: the Cloud Build lane requires Node ${required}, this shell has Node ${actual} ($(node -v)). Activate Node ${required} first." >&2
     exit 1
   fi
 }
@@ -18,6 +18,10 @@ assert_expected_sha() {
   expected="${CI_LOCAL_EXPECTED_SHA:-$actual}"
   if [ "$actual" != "$expected" ]; then
     echo "REFUSING: checked-out HEAD (${actual}) does not match CI_LOCAL_EXPECTED_SHA (${expected})" >&2
+    exit 1
+  fi
+  if [ -n "$(git status --porcelain)" ]; then
+    echo "REFUSING: the checkout has uncommitted or untracked files; HEAD alone does not identify the tested source" >&2
     exit 1
   fi
 }

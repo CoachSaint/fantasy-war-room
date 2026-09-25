@@ -17,7 +17,7 @@ set -uo pipefail
 cd "$(dirname "$0")/../.."
 source scripts/ci-local/common.sh
 
-require_node_major 20
+require_node_major 22
 assert_expected_sha
 
 echo "==> cloudbuild-pr.yaml config selftest (regression guard against \$-substitution collisions)"

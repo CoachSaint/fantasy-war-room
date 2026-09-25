@@ -7,11 +7,12 @@ Additive, non-Actions verification, added on `feat/no-github-actions-ci`.
 `.github/workflows/ci.yml` is unchanged and stays authoritative — it already
 runs only on `workflow_dispatch` (cost control, flipped 2026-09-20), so this
 branch does not disable anything Actions is currently doing. This adds a
-local script pack (`scripts/ci-local/`) and an inert Cloud Build config
-(`cloudbuild-pr.yaml`) that mirror the same `verify` job Actions defines:
+local script pack (`scripts/ci-local/`) and an active Cloud Build config
+(`cloudbuild-pr.yaml`) that run the same verification sequence as the dormant
+Actions `verify` job:
 `npm ci` → `npm test` (vitest) → `npm run lint` (eslint) → `npm run build`
-(`next build`), all pinned to Node 20 to match `actions/setup-node@v4` in
-`ci.yml`.
+(`next build`). The active Cloud Build lane now uses Node 22, matching the
+current Supabase SDK runtime requirement and the Vercel build runtime.
 
 ## Local commands
 - `scripts/ci-local/quick.sh` — fast, no-install sanity check. This repo has
@@ -19,8 +20,9 @@ local script pack (`scripts/ci-local/`) and an inert Cloud Build config
   `tsconfig.json` is ever removed, it falls back to `node --check` over any
   non-TS JS files under `src/`.)
 - `scripts/ci-local/full.sh` — exact equivalent of the CI `verify` job:
-  Node-20 assertion (`require_node_major 20`), checked-out-SHA assertion
-  (`CI_LOCAL_EXPECTED_SHA` if set, else current HEAD), then `npm ci`, `npm
+  Node-22 assertion (`require_node_major 22`), checked-out-SHA assertion
+  (`CI_LOCAL_EXPECTED_SHA` if set, else current HEAD), a clean-checkout
+  assertion, then `npm ci`, `npm
   test` (vitest run, parsed for a real pass/fail/skip count — not just exit
   code, so a missing summary or a silent skip cannot pass), `npm run lint`,
   `npm run build`. Refuses on any failure.
@@ -38,21 +40,19 @@ local script pack (`scripts/ci-local/`) and an inert Cloud Build config
 `cloudbuild-pr.yaml` — steps: `assert-identity` (fail-closed SHA + repo
 match, hardcoded to `CoachSaint/fantasy-war-room`, plus its own selftest) on
 `gcr.io/cloud-builders/git` → `full-ci` (the same `scripts/ci-local/full.sh`
-used locally) on plain `node:20`. No browser-driven tests exist in this repo
+used locally) on plain `node:22`. No browser-driven tests exist in this repo
 — `vitest.config.mjs` sets `environment: "node"`, and neither
 `playwright` nor `puppeteer` nor `@testing-library/*` appear anywhere in
-`package.json` or config — so a plain `node:20` image is correct; no
+`package.json` or config — so a plain `node:22` image is correct; no
 Chromium-capable step was added. Never deploys. Reports via Cloud Build's own
 native GitHub check — no `gh`, no token, no status spoofing.
 
-**Not yet wired up.** Inert until an operator: (1) connects this repo to
-Cloud Build's 2nd-gen GitHub App if not already connected, (2) creates a
-per-repo dedicated CI service account with no prod/deploy permissions — this
-config assumes no secrets, (3) creates a PR trigger pointing at
-`cloudbuild-pr.yaml` bound to that service account, (4) confirms the
-resulting native check name before making it required in branch protection.
-None of those four steps were performed by this change — no GCP/IAM/GitHub
-settings were touched.
+**Current 2026-09-25 status:** The PR trigger is active and reports the native
+`fantasy-war-room-pr-ci (jtf-home-group)` check. This config remains
+verification-only and does not deploy. The protected Yahoo activation PR is
+draft until owner Yahoo data, final review, and release checks pass. The
+credential-gated hosted fixtures are excluded from the ordinary test run;
+run them explicitly with `FWR_LIVE_TEST=1` against disposable hosted records.
 
 ## Verified prerequisites — actually run, not fabricated
 All of the following were executed for real on this box on 2026-09-21, after
