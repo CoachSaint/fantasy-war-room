@@ -175,6 +175,10 @@ describe("Yahoo lineup hosted database integration", () => {
       const expiredWaivers = await client.from("recommendations").select("fresh_until").eq("league_id", leagueId).eq("kind", "add");
       checked("read expired waiver", expiredWaivers.error);
       expect(new Date(String(expiredWaivers.data?.[0]?.fresh_until)).getTime()).toBeLessThanOrEqual(asOf.getTime() + 3000);
+      const staleAddApi = await getRecommendations(new Request(`http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=add`,
+        { headers: { authorization: `Bearer ${ownerToken}` } }));
+      expect(staleAddApi.status).toBe(200);
+      expect(await staleAddApi.json()).toMatchObject({ data: [], count: 0, demo: false });
     } finally {
       checked("cleanup briefs", (await client.from("daily_briefs").delete().eq("league_id", leagueId)).error);
       checked("cleanup recommendations", (await client.from("recommendations").delete().eq("league_id", leagueId)).error);

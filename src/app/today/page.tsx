@@ -104,8 +104,10 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
             {brief.status === "not_ready" && <p className="muted">No connected brief has been materialized yet.</p>}
             {brief.status === "ready" && (
               <>
-                <p className="muted">Computed {new Date(brief.computedAt).toLocaleString()}{brief.stale ? " · Stale; refresh before acting" : ""}.</p>
-                {!brief.baselineAt ? (
+                <p className="muted">Computed {new Date(brief.computedAt).toLocaleString()}{brief.stale ? " · Stale" : ""}.</p>
+                {brief.stale ? (
+                  <p className="muted">This brief has expired. Refresh the league before acting on changes.</p>
+                ) : !brief.baselineAt ? (
                   <p className="muted">First brief saved. A comparison will appear after the next Scout run.</p>
                 ) : brief.changes.length === 0 ? (
                   <p className="muted">No materialized decision changes since {new Date(brief.baselineAt).toLocaleString()}.</p>

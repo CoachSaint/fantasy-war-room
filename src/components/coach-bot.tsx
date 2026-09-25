@@ -92,8 +92,9 @@ export function CoachBot() {
       let coachContext: { demo: true } | { leagueId: string } = { demo: true };
       try {
         const contextResponse = await fetch("/api/context", { credentials: "same-origin" });
-        const contextBody = await contextResponse.json() as { data?: { memberships?: Array<{ league?: { id?: unknown }; leagueId?: unknown }> } };
-        const membership = contextBody.data?.memberships?.[0];
+        const contextBody = await contextResponse.json() as { data?: { memberships?: Array<{ membership?: { isPrimary?: boolean }; league?: { id?: unknown }; leagueId?: unknown }> } };
+        const memberships = contextBody.data?.memberships || [];
+        const membership = memberships.find((entry) => entry.membership?.isPrimary) || memberships[0];
         const candidate = membership?.league?.id ?? membership?.leagueId;
         if (contextResponse.ok && typeof candidate === "string" && candidate) coachContext = { leagueId: candidate };
       } catch {

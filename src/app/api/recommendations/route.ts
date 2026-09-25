@@ -65,11 +65,14 @@ export async function GET(request: Request) {
   if (!access.ok) return errorResponse(access.error, access.status);
 
   try {
+    const asOf = new Date().toISOString();
     let query = access.auth.adminClient
       .from("recommendations")
       .select("id, kind, subject_player_id, alternative_player_id, score, confidence, headline, reason_codes, evidence_ids, computed_at, fresh_until, engine_version, payload")
       .eq("league_id", leagueId)
       .or(`user_id.is.null,user_id.eq.${access.auth.user.id}`)
+      .lte("computed_at", asOf)
+      .gt("fresh_until", asOf)
       .order("score", { ascending: false })
       .limit(limit);
 
@@ -106,7 +109,7 @@ export async function GET(request: Request) {
       evidence,
       count: formatted.length,
       demo: false,
-      generatedAt: new Date().toISOString(),
+      generatedAt: asOf,
     });
   } catch {
     return errorResponse("recommendations_unavailable", 503);

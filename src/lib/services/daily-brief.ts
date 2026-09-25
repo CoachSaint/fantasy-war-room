@@ -39,7 +39,7 @@ export async function materializeDailyBriefForLeague(
     const userId = String(member.user_id);
     const [recommendations, previous] = await Promise.all([
       client.from("recommendations")
-        .select("id, kind, subject_player_id, alternative_player_id, score, headline, evidence_ids, computed_at")
+        .select("id, kind, subject_player_id, alternative_player_id, score, headline, evidence_ids, computed_at, fresh_until")
         .eq("league_id", leagueId).or(`user_id.is.null,user_id.eq.${userId}`)
         .gt("fresh_until", asOfISO).order("score", { ascending: false }).limit(101),
       client.from("daily_briefs").select("computed_at, payload")
@@ -68,6 +68,11 @@ export async function materializeDailyBriefForLeague(
     }
     const hasBaseline = Boolean(previous.data);
     const changes = hasBaseline ? diffBriefActions(oldActions as BriefAction[], actions) : [];
+    const briefFreshUntil = Math.min(asOf.getTime() + 24 * 60 * 60_000,
+      ...(recommendations.data || []).map((row) => new Date(String(row.fresh_until)).getTime()));
+    if (!Number.isFinite(briefFreshUntil) || briefFreshUntil <= asOf.getTime()) {
+      throw new DailyBriefError("brief_freshness_invalid");
+    }
     const payload = {
       version: 1,
       scope: "materialized_recommendation_changes_only",
@@ -77,7 +82,7 @@ export async function materializeDailyBriefForLeague(
     };
     const result = await client.from("daily_briefs").upsert({
       league_id: leagueId, user_id: userId, season: Number(league.data.season), week: Number(league.data.current_week),
-      payload, computed_at: asOfISO, fresh_until: new Date(asOf.getTime() + 24 * 60 * 60_000).toISOString(),
+      payload, computed_at: asOfISO, fresh_until: new Date(briefFreshUntil).toISOString(),
       engine_version: engineVersion,
     }, { onConflict: "league_id,user_id,season,week,computed_at" }).select("id");
     if (result.error || result.data?.length !== 1) throw new DailyBriefError("brief_write_failed");
