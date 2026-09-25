@@ -37,7 +37,7 @@ function demoReply(): string {
 function providerContext(recommendations: Array<Record<string, unknown>>, evidence: Array<Record<string, unknown>>): string {
   return [
     "CURRENT LEAGUE RECOMMENDATIONS:",
-    ...recommendations.map((row) => `${String(row.kind).toUpperCase()} ${String(row.headline)} (${String(row.score)}/100, ${String(row.confidence)}% confidence; evidence ${Array.isArray(row.evidence_ids) ? row.evidence_ids.join(", ") : "none"})`),
+    ...recommendations.map((row) => `${String(row.kind).toUpperCase()} ${String(row.headline)} (${String(row.score)}/100, ${String(row.confidence)}% confidence; computed ${String(row.computed_at)}; fresh until ${String(row.fresh_until)}; evidence ${Array.isArray(row.evidence_ids) ? row.evidence_ids.join(", ") : "none"})`),
     "CURRENT EVIDENCE:",
     ...evidence.map((row) => `${String(row.type)} from ${String(row.source)}: ${String(row.summary)}`),
   ].join("\n");
@@ -70,11 +70,14 @@ export async function POST(request: Request) {
   if (!apiKey) return errorResponse("coach_provider_unavailable", 503);
 
   try {
+    const now = new Date().toISOString();
     const recommendationQuery = await access.auth.adminClient
       .from("recommendations")
-      .select("kind, headline, score, confidence, evidence_ids")
+      .select("kind, headline, score, confidence, evidence_ids, computed_at, fresh_until")
       .eq("league_id", leagueId)
       .or(`user_id.is.null,user_id.eq.${access.auth.user.id}`)
+      .lte("computed_at", now)
+      .gt("fresh_until", now)
       .order("score", { ascending: false })
       .limit(50);
     if (recommendationQuery.error) return errorResponse("league_context_unavailable", 503);

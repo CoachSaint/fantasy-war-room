@@ -3,7 +3,7 @@
 import { useEffect, useState } from "react";
 
 export type ConnectedLeague = {
-  league: { id: string; name: string; season: number; currentWeek: number };
+  league: { id: string; name: string; provider: string; season: number; currentWeek: number; scoringRuleCount: number; receptionPoints: number | null; rosterSlots: string[] };
   roster: { id: string; name: string | null } | null;
 };
 
@@ -28,8 +28,23 @@ export function useConnectedLeague(): LeagueState {
         const memberships = Array.isArray(data?.memberships) ? data.memberships : [];
         const primary = memberships.find((entry) => entry?.membership?.isPrimary) ?? memberships[0];
         if (!primary?.league?.id) return setState({ status: "setup_required" });
+        const scoring = primary.league.scoring;
+        const modifiers = scoring && typeof scoring === "object" && !Array.isArray(scoring)
+          ? scoring.statModifiers : null;
+        const rules = modifiers && typeof modifiers === "object" && !Array.isArray(modifiers)
+          ? modifiers as Record<string, unknown> : {};
+        const receptionValue = Number(rules["11"]);
+        const slots = Array.isArray(primary.rosterSlots)
+          ? primary.rosterSlots.map((slot: { slotType?: unknown }) => String(slot.slotType || "")).filter(Boolean)
+          : [];
         setState({ status: "connected", context: {
-          league: { id: String(primary.league.id), name: String(primary.league.name), season: Number(primary.league.season), currentWeek: Number(primary.league.currentWeek) },
+          league: {
+            id: String(primary.league.id), name: String(primary.league.name), provider: String(primary.league.provider || "manual"),
+            season: Number(primary.league.season), currentWeek: Number(primary.league.currentWeek),
+            scoringRuleCount: Object.keys(rules).length,
+            receptionPoints: rules["11"] == null || !Number.isFinite(receptionValue) ? null : receptionValue,
+            rosterSlots: slots,
+          },
           roster: primary.roster?.id ? { id: String(primary.roster.id), name: primary.roster.name ? String(primary.roster.name) : null } : null,
         } });
       } catch (error) {

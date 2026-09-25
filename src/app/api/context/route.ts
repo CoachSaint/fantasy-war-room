@@ -10,6 +10,7 @@ const querySchema = z.object({ leagueId: z.string().uuid().optional() });
 type ContextLeague = {
   id: string;
   name: string;
+  provider: string;
   season: number;
   currentWeek: number;
   scoring: unknown;
@@ -47,7 +48,7 @@ export async function GET(request: Request) {
     const leagueIds = [...new Set(memberships.map((membership) => String(membership.league_id)))];
     const rosterIds = [...new Set(memberships.map((membership) => membership.roster_id).filter((id): id is string => Boolean(id)).map(String))];
     const [leaguesResult, rostersResult, slotsResult, preferencesResult] = await Promise.all([
-      auth.adminClient.from("leagues").select("id, name, season, current_week, scoring, roster_positions, workspace_id").in("id", leagueIds),
+      auth.adminClient.from("leagues").select("id, name, provider, season, current_week, scoring, roster_positions, workspace_id").in("id", leagueIds),
       rosterIds.length ? auth.adminClient.from("rosters").select("id, league_id, name, provider_roster_id, player_ids, starter_ids").in("id", rosterIds) : Promise.resolve({ data: [], error: null }),
       auth.adminClient.from("roster_slot_definitions").select("id, league_id, slot_type, slot_order, eligible_positions, required").in("league_id", leagueIds).order("slot_order", { ascending: true }),
       auth.adminClient.from("manager_preferences").select("league_id, risk_tolerance, upside_bias, floor_bias, rookie_aggression, waiver_aggression, trade_aggression, qb_strategy, te_strategy, stacking_preference, favorite_teams, avoid_players").eq("user_id", auth.user.id).in("league_id", leagueIds),
@@ -75,7 +76,7 @@ export async function GET(request: Request) {
       const roster = referencedRoster && String(referencedRoster.league_id) === leagueId ? referencedRoster : undefined;
       const preferences = preferencesByLeague.get(leagueId);
       const leagueDto: ContextLeague | null = league ? {
-        id: String(league.id), name: String(league.name), season: Number(league.season), currentWeek: Number(league.current_week), scoring: league.scoring, rosterPositions: league.roster_positions, workspaceId: String(league.workspace_id),
+        id: String(league.id), name: String(league.name), provider: String(league.provider), season: Number(league.season), currentWeek: Number(league.current_week), scoring: league.scoring, rosterPositions: league.roster_positions, workspaceId: String(league.workspace_id),
       } : null;
       return {
         membership: { leagueId, rosterId: membership.roster_id ? String(membership.roster_id) : null, providerUserId: membership.provider_user_id ? String(membership.provider_user_id) : null, isPrimary: Boolean(membership.is_primary) },
