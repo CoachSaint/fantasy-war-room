@@ -5,12 +5,25 @@ import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoPlayers, type ExtendedPlayer } from "@/lib/demo";
 import { PlayerCompareModal } from "@/components/player-compare-modal";
+import { ConnectedDecisions } from "@/components/connected-decisions";
+import { LeagueGate } from "@/components/league-gate";
+import { useConnectedLeague } from "@/lib/use-connected-league";
 import { ArrowUpDown, AlertCircle } from "lucide-react";
 
 type Mode = "best" | "value" | "safe" | "upside";
 type PositionFilter = "ALL" | "QB" | "RB" | "WR" | "TE";
 
 export default function DraftPage() {
+  const league = useConnectedLeague();
+  if (league.status === "loading") return <LeagueGate state={league} />;
+  if (league.status === "connected") {
+    return <ConnectedDecisions leagueId={league.context.league.id} leagueName={league.context.league.name} eyebrow="Draft board" title="Draft decisions" description="Fresh draft recommendations from your connected league." kinds={["draft"]} />;
+  }
+  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  return <DemoDraftPage />;
+}
+
+function DemoDraftPage() {
   const [mode, setMode] = useState<Mode>("best");
   const [posFilter, setPosFilter] = useState<PositionFilter>("ALL");
   const [comparingPlayers, setComparingPlayers] = useState<[ExtendedPlayer, ExtendedPlayer] | null>(null);

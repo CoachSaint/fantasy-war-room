@@ -3,9 +3,22 @@
 import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoWaiverPairs } from "@/lib/demo";
+import { ConnectedDecisions } from "@/components/connected-decisions";
+import { LeagueGate } from "@/components/league-gate";
+import { useConnectedLeague } from "@/lib/use-connected-league";
 import { DollarSign, Calendar, Flame } from "lucide-react";
 
 export default function WaiversPage() {
+  const league = useConnectedLeague();
+  if (league.status === "loading") return <LeagueGate state={league} />;
+  if (league.status === "connected") {
+    return <ConnectedDecisions leagueId={league.context.league.id} leagueName={league.context.league.name} eyebrow="Waiver wire" title="Add and drop decisions" description="Fresh waiver recommendations from your connected league." kinds={["add", "drop"]} />;
+  }
+  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  return <DemoWaiversPage />;
+}
+
+function DemoWaiversPage() {
   return (
     <>
       <ConfigurationBanner message="Waiver pairs and FAAB guidance are demo fixtures until league availability and budget history are connected." />

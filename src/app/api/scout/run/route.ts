@@ -4,13 +4,19 @@ import { z } from "zod";
 import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
 import { errorResponse } from "@/lib/security/http";
 import { nflverse } from "@/lib/data/nflverse";
+import { sleeper } from "@/lib/data/sleeper";
+import { materializeGlobalNflverse, ScoutMaterializationError } from "@/lib/services/scout-materializer";
 
 export const dynamic = "force-dynamic";
 
 const inputSchema = z.object({
-  season: z.coerce.number().int().min(2020).max(2100).default(2026),
-  week: z.coerce.number().int().min(0).max(23).default(1),
+  season: z.coerce.number().int().min(2020).max(2100).optional(),
+  week: z.coerce.number().int().min(0).max(23).optional(),
 });
+
+type ScoutInput = { season: number; week: number };
+
+class NflStateUnavailableError extends Error {}
 
 function isAuthorized(request: Request): boolean {
   const cronSecret = process.env.CRON_SECRET;
@@ -27,13 +33,14 @@ interface StepDetail {
   durationMs: number;
   recordsProcessed: number;
   error?: string;
+  sourceWeek?: number;
 }
 
 function step(name: string, status: StepDetail["status"], startedAt: number, recordsProcessed: number, error?: string): StepDetail {
   return { name, status, durationMs: Date.now() - startedAt, recordsProcessed, ...(error ? { error } : {}) };
 }
 
-async function parseInput(request: Request): Promise<z.infer<typeof inputSchema>> {
+async function parseInput(request: Request): Promise<ScoutInput> {
   const url = new URL(request.url);
   const values: Record<string, string> = {};
   for (const key of ["season", "week"]) {
@@ -49,7 +56,19 @@ async function parseInput(request: Request): Promise<z.infer<typeof inputSchema>
       }
     }
   }
-  return inputSchema.parse(values);
+  const parsed = inputSchema.parse(values);
+  if ((parsed.season == null) !== (parsed.week == null)) throw new Error("season_week_pair_required");
+  if (parsed.season != null && parsed.week != null) return { season: parsed.season, week: parsed.week };
+
+  try {
+    const state = await sleeper.getNflState();
+    return {
+      season: z.coerce.number().int().min(2020).max(2100).parse(state.season),
+      week: z.coerce.number().int().min(0).max(23).parse(state.week),
+    };
+  } catch {
+    throw new NflStateUnavailableError();
+  }
 }
 
 export async function GET(request: Request) {
@@ -64,11 +83,12 @@ async function handleScoutRun(request: Request) {
   if (!process.env.CRON_SECRET) return errorResponse("cron_secret_unconfigured", 503);
   if (!isAuthorized(request)) return errorResponse("unauthorized", 401);
 
-  let input: z.infer<typeof inputSchema>;
+  let input: ScoutInput;
   try {
     input = await parseInput(request);
   } catch (error) {
     if (error instanceof SyntaxError) return errorResponse("invalid_json", 400);
+    if (error instanceof NflStateUnavailableError) return errorResponse("nfl_state_unavailable", 503);
     return errorResponse("invalid_scout_input", 400);
   }
 
@@ -103,59 +123,64 @@ async function handleScoutRun(request: Request) {
     return errorResponse("scout_persistence_unavailable", 503);
   }
 
-  // These steps previously reported fixture work as successful. Until a real
-  // league sync/materializer is configured, report the bounded gap explicitly.
-  let markFailed = false;
+  // Yahoo consent and league-specific recommendations remain separate from
+  // global source ingestion. A partial run must keep its degraded status.
+  let failureCode: string | null = null;
+  let playersProcessed = 0;
+  let evidenceIngested = 0;
+  let statsWeek: number | null = null;
   const syncStart = Date.now();
   steps.push(step("league_roster_sync", "skipped", syncStart, 0, "league_sync_not_configured"));
 
-  const normalizeStart = Date.now();
-  steps.push(step("player_normalization", "skipped", normalizeStart, 0, "player_materializer_not_configured"));
-
-  const snapshotStart = Date.now();
+  const fetchStart = Date.now();
   try {
-    const snapshots = await nflverse.getPlayerSnapshots(input);
-    if (snapshots.length === 0) {
-      steps.push(step("stats_snapshot_ingestion", "skipped", snapshotStart, 0, "provider_unavailable"));
+    const [stats, evidence] = await Promise.all([
+      nflverse.getLatestAvailablePlayerSnapshots(input),
+      nflverse.getEvidence(input),
+    ]);
+    const snapshots = stats.snapshots;
+    statsWeek = stats.week;
+    if (!snapshots.length) {
+      steps.push(step("player_normalization", "skipped", fetchStart, 0, "stats_provider_unavailable"));
+      steps.push(step("stats_snapshot_ingestion", "skipped", fetchStart, 0, "stats_provider_unavailable"));
+      steps.push(step("evidence_ingestion_dedupe", "skipped", fetchStart, 0, evidence.length ? "canonical_player_mapping_required" : "provider_unavailable"));
     } else {
-      // Fetching is not ingestion. Preserve the observed row count while being
-      // explicit that no canonical snapshot write occurred.
-      steps.push(step("stats_snapshot_ingestion", "skipped", snapshotStart, snapshots.length, "snapshot_persistence_not_configured"));
+      const result = await materializeGlobalNflverse(adminClient, snapshots, evidence);
+      playersProcessed = result.playersMapped;
+      evidenceIngested = result.evidenceInserted;
+      steps.push(step("player_normalization", "success", fetchStart, result.playersMapped));
+      steps.push({ ...step("stats_snapshot_ingestion", "success", fetchStart, result.snapshotsInserted), sourceWeek: stats.week! });
+      if (!evidence.length) {
+        steps.push(step("evidence_ingestion_dedupe", "skipped", fetchStart, 0, "provider_unavailable"));
+      } else if (result.evidenceUnmapped) {
+        steps.push(step("evidence_ingestion_dedupe", "failed", fetchStart, result.evidenceInserted, "unmapped_provider_evidence"));
+        failureCode = "unmapped_provider_evidence";
+      } else {
+        steps.push(step("evidence_ingestion_dedupe", "success", fetchStart, result.evidenceInserted));
+      }
     }
-  } catch {
-    markFailed = true;
-    steps.push(step("stats_snapshot_ingestion", "failed", snapshotStart, 0, "provider_error"));
-  }
-
-  const evidenceStart = Date.now();
-  try {
-    const evidence = await nflverse.getEvidence(input);
-    if (evidence.length === 0) {
-      steps.push(step("evidence_ingestion_dedupe", "skipped", evidenceStart, 0, "provider_unavailable"));
-    } else {
-      // The current schema requires canonical UUID player IDs before evidence
-      // can be persisted. Do not write provider IDs into FK columns.
-      steps.push(step("evidence_ingestion_dedupe", "skipped", evidenceStart, evidence.length, "canonical_player_mapping_required"));
-    }
-  } catch {
-    markFailed = true;
-    steps.push(step("evidence_ingestion_dedupe", "failed", evidenceStart, 0, "provider_error"));
+  } catch (error) {
+    failureCode = error instanceof ScoutMaterializationError ? error.code : "provider_error";
+    steps.push(step("player_normalization", "failed", fetchStart, 0, failureCode));
+    steps.push(step("stats_snapshot_ingestion", "failed", fetchStart, 0, failureCode));
+    steps.push(step("evidence_ingestion_dedupe", "failed", fetchStart, 0, failureCode));
   }
 
   const scoringStart = Date.now();
   steps.push(step("feature_scoring", "skipped", scoringStart, 0, "league_context_required"));
   const diffStart = Date.now();
-  steps.push(step("snapshot_diff", "skipped", diffStart, 0, "snapshot_persistence_required"));
+  steps.push(step("snapshot_diff", "skipped", diffStart, 0, "league_baseline_required"));
   const materializeStart = Date.now();
   steps.push(step("recommendation_materialization", "skipped", materializeStart, 0, "recommendation_materializer_not_configured"));
 
   const finishedAt = new Date();
-  const hasFailures = markFailed || steps.some((entry) => entry.status === "failed");
+  const hasFailures = Boolean(failureCode) || steps.some((entry) => entry.status === "failed");
   const finalStatus = "completed_with_errors" as const;
+  const runError = failureCode ?? (hasFailures ? "provider_error" : "pipeline_incomplete");
   try {
     const finalUpdate = await adminClient
       .from("scout_runs")
-      .update({ status: finalStatus, finished_at: finishedAt.toISOString(), steps, error: hasFailures ? "provider_error" : "pipeline_incomplete" })
+      .update({ status: finalStatus, finished_at: finishedAt.toISOString(), steps, error: runError })
       .eq("id", runId);
     if (finalUpdate.error) return errorResponse("scout_persistence_unavailable", 503);
   } catch {
@@ -170,7 +195,7 @@ async function handleScoutRun(request: Request) {
     startedAt: startedAt.toISOString(),
     finishedAt: finishedAt.toISOString(),
     steps,
-    error: hasFailures ? "provider_error" : "pipeline_incomplete",
-    summary: { season: input.season, week: input.week, playersProcessed: 0, evidenceIngested: 0, recommendationsMaterialized: 0 },
+    error: runError,
+    summary: { season: input.season, week: input.week, statsWeek, playersProcessed, evidenceIngested, recommendationsMaterialized: 0 },
   }, { status: 503 });
 }

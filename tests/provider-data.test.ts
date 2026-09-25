@@ -6,6 +6,7 @@ import {
   parseDepthCharts,
   parseInjuryReport,
   parsePlayerStats,
+  parseLatestAvailablePlayerStats,
 } from "../src/lib/data/nflverse";
 
 afterEach(() => {
@@ -86,6 +87,18 @@ describe("nflverse release adapters", () => {
     expect(snapshots[1].floor).toBeUndefined();
     expect(snapshots[2].projectedPoints).toBeUndefined();
     expect(snapshots[2].floor).toBeUndefined();
+  });
+
+  it("uses the newest published historical stats week without calling actuals projections", () => {
+    const selected = parseLatestAvailablePlayerStats([
+      { player_id: "p1", player_name: "Player One", season: 2026, week: 1, fantasy_points_ppr: 11 },
+      { player_id: "p1", player_name: "Player One", season: 2026, week: 2, fantasy_points_ppr: 17 },
+      { player_id: "p1", player_name: "Player One", season: 2026, week: 4, fantasy_points_ppr: 22 },
+    ], 2026, 3);
+    expect(selected.week).toBe(2);
+    expect(selected.snapshots).toHaveLength(1);
+    expect(selected.snapshots[0].actualPoints).toBe(17);
+    expect(selected.snapshots[0].projectedPoints).toBeUndefined();
   });
 
   it("retains depth order and practice participation in evidence", () => {

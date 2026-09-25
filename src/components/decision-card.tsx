@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { ChevronDown, ChevronUp, ShieldCheck, Zap, Info } from "lucide-react";
-import type { Recommendation } from "@/lib/types";
+import type { Evidence, Recommendation } from "@/lib/types";
 import { demoEvidence } from "@/lib/demo";
 
 const label: Record<Recommendation["kind"], string> = {
@@ -25,11 +25,11 @@ const kindColor: Record<Recommendation["kind"], string> = {
   watch: "var(--warn)",
 };
 
-export function DecisionCard({ item }: { item: Recommendation }) {
+export function DecisionCard({ item, evidence = [], demo = false }: { item: Recommendation; evidence?: Evidence[]; demo?: boolean }) {
   const [expanded, setExpanded] = useState(false);
   const color = kindColor[item.kind] || "var(--good)";
 
-  const itemEvidences = demoEvidence.filter((e) => item.evidenceIds.includes(e.id));
+  const itemEvidences = (demo ? demoEvidence : evidence).filter((e) => item.evidenceIds.includes(e.id));
 
   return (
     <article
@@ -142,7 +142,7 @@ export function DecisionCard({ item }: { item: Recommendation }) {
                 </div>
               ))
             ) : (
-              <div className="muted">Grounding: nflverse telemetry & Sleeper depth chart updates</div>
+              <div className="muted">Evidence details are unavailable for this recommendation. Check its source before acting.</div>
             )}
           </div>
         )}

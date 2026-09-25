@@ -1,12 +1,82 @@
 "use client";
 
+import { useEffect, useState } from "react";
 import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
 import { DecisionCard } from "@/components/decision-card";
+import { LeagueGate } from "@/components/league-gate";
 import { demoRecommendations, demoWhatChangedToday } from "@/lib/demo";
+import { useConnectedLeague } from "@/lib/use-connected-league";
+import type { Evidence, Recommendation } from "@/lib/types";
 import { Clock, RefreshCw, Flame } from "lucide-react";
 
 export default function TodayPage() {
+  const league = useConnectedLeague();
+  if (league.status === "loading") return <LeagueGate state={league} />;
+  if (league.status === "connected") {
+    return <ConnectedToday leagueId={league.context.league.id} leagueName={league.context.league.name} />;
+  }
+  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  return <DemoTodayPage />;
+}
+
+function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName: string }) {
+  const [state, setState] = useState<
+    | { status: "loading" }
+    | { status: "unavailable" }
+    | { status: "ready"; recommendations: Recommendation[]; evidence: Evidence[]; checkedAt: number }
+  >({ status: "loading" });
+  const [clock, setClock] = useState<number | null>(null);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setClock(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/recommendations?leagueId=${encodeURIComponent(leagueId)}&limit=20`, { credentials: "same-origin", signal: controller.signal });
+        if (!response.ok) return setState({ status: "unavailable" });
+        const body: unknown = await response.json();
+        if (!body || typeof body !== "object" || !("data" in body)) return setState({ status: "unavailable" });
+        const payload = body as { data: Recommendation[]; evidence?: Evidence[] };
+        if (!Array.isArray(payload.data)) return setState({ status: "unavailable" });
+        setState({ status: "ready", recommendations: payload.data, evidence: Array.isArray(payload.evidence) ? payload.evidence : [], checkedAt: Date.now() });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setState({ status: "unavailable" });
+      }
+    })();
+    return () => controller.abort();
+  }, [leagueId]);
+
+  const fresh = state.status === "ready"
+    ? state.recommendations.filter((recommendation) => new Date(recommendation.freshUntil).getTime() > (clock ?? state.checkedAt))
+    : [];
+  return (
+    <>
+      <PageHeader eyebrow="Connected league · preview" title={leagueName} description="Only persisted recommendations for your authenticated league appear here." />
+      {state.status === "loading" && <p role="status">Loading current decisions…</p>}
+      {state.status === "unavailable" && <p role="alert">Recommendations are unavailable. No demo decisions were substituted.</p>}
+      {state.status === "ready" && (
+        <>
+          {fresh.length === 0 ? (
+            <section className="card"><h2 style={{ marginTop: 0 }}>No current recommendations yet</h2><p className="muted">The connected league has no fresh materialized decisions. Import its roster and complete a successful Scout run before relying on this brief.</p></section>
+          ) : (
+            <section className="grid grid-3">
+              {fresh.slice(0, 3).map((item) => <DecisionCard key={item.id} item={item} evidence={state.evidence} />)}
+            </section>
+          )}
+          <p className="muted" style={{ marginTop: 24 }}>A daily change brief is pending a successful Scout materialization. Earlier or stale recommendations are not presented as current.</p>
+        </>
+      )}
+    </>
+  );
+}
+
+function DemoTodayPage() {
   return (
     <>
       <ConfigurationBanner />
@@ -84,7 +154,7 @@ export default function TodayPage() {
       {/* Decision Cards Grid */}
       <section className="grid grid-3" style={{ marginBottom: 28 }}>
         {demoRecommendations.map((item) => (
-          <DecisionCard key={item.id} item={item} />
+          <DecisionCard key={item.id} item={item} demo />
         ))}
       </section>
 

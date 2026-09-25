@@ -68,7 +68,7 @@ export function ManagerContext() {
           <strong>{auth ? "Sign in required" : state.status === "setup_required" ? "League setup required" : "League context unavailable"}</strong>
           <div className="muted" style={{ fontSize: 12 }}>{state.message}</div>
         </div>
-        {!auth && <Link href="/league/setup" style={{ color: "var(--good)", fontWeight: 700, whiteSpace: "nowrap" }}>Open setup</Link>}
+        <Link href={auth ? "/auth" : "/league/setup"} style={{ color: "var(--good)", fontWeight: 700, whiteSpace: "nowrap" }}>{auth ? "Sign in" : "Open setup"}</Link>
       </aside>
     );
   }

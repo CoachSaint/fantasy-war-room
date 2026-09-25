@@ -66,10 +66,14 @@ export interface NflverseRawInjury {
 export interface NflverseSnapshot extends PlayerSnapshot {
   actualPoints?: number;
   projectionSource?: "projected" | "actual";
+  fullName?: string;
+  team?: string;
+  position?: string;
 }
 
 export interface NflverseAdapter {
-  getPlayerSnapshots(input: { season: number; week: number }): Promise<PlayerSnapshot[]>;
+  getPlayerSnapshots(input: { season: number; week: number }): Promise<NflverseSnapshot[]>;
+  getLatestAvailablePlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; snapshots: NflverseSnapshot[] }>;
   getEvidence(input: { season: number; week: number }): Promise<Evidence[]>;
   parsePlayerStats(data: NflverseRawStat[], season: number, week: number): PlayerSnapshot[];
   parseDepthCharts(data: NflverseRawDepth[], season: number, week: number): Evidence[];
@@ -149,14 +153,23 @@ function csvRows(input: string): Record<string, string>[] {
   return rows.map((values) => Object.fromEntries(header.map((key, index) => [key, values[index] ?? ""])));
 }
 
+const MAX_RELEASE_BYTES = 8_000_000;
+
 async function readReleaseAsset(url: string): Promise<unknown[]> {
   const response = await fetch(url, { next: { revalidate: 3600 } });
   if (!response.ok) return [];
+
+  const declaredSize = Number(response.headers?.get("content-length"));
+  if (Number.isFinite(declaredSize) && declaredSize > MAX_RELEASE_BYTES) {
+    await response.body?.cancel();
+    return [];
+  }
 
   // JSON is useful for local fixtures and mirrors; official releases are CSV.
   const responseWithText = response as Response & { text?: () => Promise<string> };
   if (typeof responseWithText.text === "function") {
     const body = await responseWithText.text();
+    if (new TextEncoder().encode(body).length > MAX_RELEASE_BYTES) return [];
     const trimmed = body.trim();
     if (!trimmed) return [];
     if (trimmed.startsWith("[") || trimmed.startsWith("{")) {
@@ -184,6 +197,9 @@ export function parsePlayerStats(
     const ceiling = projectedPoints == null ? undefined : Number((projectedPoints * 1.45).toFixed(1));
     const snapshot: NflverseSnapshot = {
       playerId,
+      fullName: row.player_name,
+      team: row.team || row.recent_team,
+      position: row.position,
       week: numberValue(row.week) ?? week,
       season: numberValue(row.season) ?? season,
       projectedPoints: projectedPoints == null ? undefined : Number(projectedPoints.toFixed(1)),
@@ -203,6 +219,19 @@ export function parsePlayerStats(
     };
     return snapshot;
   });
+}
+
+/** Select the newest published week at or before the requested provider week. */
+export function parseLatestAvailablePlayerStats(
+  data: NflverseRawStat[], season: number, requestedWeek: number
+): { week: number | null; snapshots: NflverseSnapshot[] } {
+  const availableWeeks = data
+    .filter((row) => numberValue(row.season) === season && row.player_id && row.player_name)
+    .map((row) => numberValue(row.week))
+    .filter((week): week is number => week != null && Number.isInteger(week) && week <= requestedWeek);
+  if (!availableWeeks.length) return { week: null, snapshots: [] };
+  const week = Math.max(...availableWeeks);
+  return { week, snapshots: parsePlayerStats(data, season, week) };
 }
 
 export function parseDepthCharts(
@@ -303,6 +332,16 @@ export const nflverse: NflverseAdapter = {
     } catch {
       // A missing release is a bounded degraded result; never substitute demo data.
       return [];
+    }
+  },
+
+  async getLatestAvailablePlayerSnapshots({ season, week }: { season: number; week: number }) {
+    const url = nflverseReleaseAssetUrl("stats_player", `stats_player_week_${season}.csv`);
+    try {
+      const raw = await readReleaseAsset(url);
+      return parseLatestAvailablePlayerStats(raw as NflverseRawStat[], season, week);
+    } catch {
+      return { week: null, snapshots: [] };
     }
   },
 

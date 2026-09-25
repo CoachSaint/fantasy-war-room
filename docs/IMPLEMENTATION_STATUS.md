@@ -6,6 +6,14 @@ Updated: 2026-09-24
 
 **Status: HOLD for full production distribution.** The repository is suitable for a protected demo and an integration preview. It is not evidence of a fully live, current, multi-tenant fantasy intelligence service until the configuration and live gates below are completed.
 
+### 2026-09-24 activation check
+
+- The dedicated Supabase project is on the **Free** plan with no selected paid add-ons. It has approximately 12 MB in a 500 MB database allowance. The application connects to the hosted project; a local Docker/Supabase CLI container is not required for production.
+- Auth now points at the Vercel production URL, permits the exact `/auth/callback` redirect, and disables public signups. Administrator-generated invite links plus user-set passwords were proven with disposable users. The Supabase built-in mailer cannot deliver invites to arbitrary recipients without custom SMTP, so the operator must send the generated link directly to Mason's confirmed address after deployment.
+- Connected roster and player APIs were proven against disposable owner/outsider/anonymous accounts. Owner reads succeeded, outsider and anonymous reads were denied, and all disposable rows/users were removed.
+- The nflverse 2026 player-stats release currently contains regular-season weeks 1 and 2 while Sleeper reports week 3. Historical actuals are stored with their source week and never labeled as projections. Week 3 injury evidence is fetched separately. The large depth-chart asset is skipped under the bounded fetch limit.
+- Scout remains degraded: Yahoo consent/league sync and league-specific scoring, diff, and recommendation materialization are incomplete. No live user league or recommendation has been imported or created. A healthy database or passing unit suite does not change this status.
+
 ## Repository-complete work
 
 - Five polished product surfaces plus explicit demo/configuration boundaries.
@@ -23,17 +31,17 @@ Updated: 2026-09-24
 
 | Gate | Current boundary | Owner evidence required |
 | --- | --- | --- |
-| Supabase | Dedicated free Nano project `fswsefqqlltmaktiqwge` is healthy; Production Vercel Supabase variable names are set but the current deployment has not been rebuilt with them | Auth identities, deployment binding, connected health check, and live access checks |
+| Supabase | Dedicated Free project `fswsefqqlltmaktiqwge` is healthy and the current Vercel production alias reports connected Supabase in demo mode; the candidate branch has not been deployed | Exact candidate SHA/deployment binding, Mason login, and live access checks |
 | Schema | `0001` through `0004` are applied on the dedicated project; a disposable owner/outsider/anonymous matchup RLS probe passed and was cleaned up | Recheck exact applied/pending history before promotion and prove full user/membership isolation |
 | League identity | Setup contract and persistence route exist | Authenticated real league setup, membership/roster mapping, persisted result |
 | Setup atomicity | Every write and compensating cleanup result is checked | Transactional RPC or equivalent plus injected-failure proof before self-service production use |
 | Sleeper | Public adapter exists; no account/league is configured here | Real league selection, current NFL state, roster/player ID verification |
-| Yahoo | Production Vercel has server-side OAuth variable names set, but the current deployment still reports `awaiting_credentials`; a new deployment, Yahoo confirmation, and live consent/import have not been proven | Confirm the new Yahoo app's Fantasy Sports: Read permission and Client ID approval; verify migration 0003 and exact callback; redeploy only after the app-specific database is bound; then prove consent and live import |
+| Yahoo | Production Vercel reports Yahoo credentials configured, but no user has consented or imported a league; the candidate branch has not been deployed | Confirm Fantasy Sports: Read permission and exact callback, then prove Mason's consent and live import with his account |
 | Yahoo matchups | Current-week scoreboard fetch, normalization, persistence, schema and member-only RLS are implemented; no real Yahoo response or import is yet proven | Complete an authenticated Yahoo consent/sync and verify roster and matchup rows/counts against Yahoo's current-week scoreboard |
 | nflverse | Release assets and bounded parser exist; some seasons/assets may be unavailable | Current season/week asset availability, timestamps, sample data validation |
-| Materialization | Scout honestly marks sync, normalization, scoring, diff, and recommendation materialization as skipped until configured | Real provider-to-canonical-player sync, snapshot/evidence persistence, recommendations, and repeatable run |
+| Materialization | Candidate branch can persist source-labeled global nflverse snapshots and matched evidence; Yahoo sync and league-specific scoring, diff, and recommendation materialization remain skipped | Repeatable live Scout run, provider-to-league player mapping, and source-backed actionable recommendations |
 | Coach | Evidence-constrained OpenRouter path exists; demo path is explicit | `OPENROUTER_API_KEY`, provider/model policy, cost/rate checks, evidence-grounded live response |
-| Vercel | Cron declaration exists | Production env scope, deployment binding, cron history, auth negative/positive checks |
+| Vercel | Cron declaration and a healthy current demo deployment exist; candidate branch is local only | Exact candidate deployment binding, cron history, auth negative/positive checks |
 | Rollback | Application rollback procedure is documented | Exact known-good deployment/SHA, database backup/PITR anchor, tested recovery |
 
 ## Truthful runtime states

@@ -3,7 +3,7 @@ import { z } from "zod";
 import { demoRecommendations } from "@/lib/demo";
 import { authorizeLeagueAccess, hasAdminCredentials } from "@/lib/supabase/admin";
 import { errorResponse } from "@/lib/security/http";
-import type { Recommendation } from "@/lib/types";
+import type { Evidence, Recommendation } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -67,8 +67,30 @@ export async function GET(request: Request) {
     }
 
     const formatted = (data || []).map((row) => formatRecommendation(row as Record<string, unknown>));
+    const evidenceIds = [...new Set(formatted.flatMap((recommendation) => recommendation.evidenceIds))].slice(0, 200);
+    let evidence: Evidence[] = [];
+    if (evidenceIds.length) {
+      const evidenceResult = await access.auth.adminClient
+        .from("evidence")
+        .select("id, player_id, type, source, source_url, observed_at, published_at, confidence, summary, fingerprint")
+        .in("id", evidenceIds);
+      if (evidenceResult.error) return errorResponse("recommendations_unavailable", 503);
+      evidence = (evidenceResult.data || []).map((row) => ({
+        id: String(row.id),
+        playerId: row.player_id ? String(row.player_id) : "",
+        type: row.type as Evidence["type"],
+        source: String(row.source),
+        sourceUrl: row.source_url ? String(row.source_url) : undefined,
+        observedAt: String(row.observed_at),
+        publishedAt: row.published_at ? String(row.published_at) : undefined,
+        confidence: Number(row.confidence) / 100,
+        summary: String(row.summary),
+        fingerprint: String(row.fingerprint),
+      }));
+    }
     return NextResponse.json({
       data: formatted,
+      evidence,
       count: formatted.length,
       demo: false,
       generatedAt: new Date().toISOString(),

@@ -5,9 +5,22 @@ import { PageHeader } from "@/components/page-header";
 import { ConfigurationBanner } from "@/components/configuration-banner";
 import { demoStartSitPairs } from "@/lib/demo";
 import { PlayerCompareModal } from "@/components/player-compare-modal";
+import { ConnectedDecisions } from "@/components/connected-decisions";
+import { LeagueGate } from "@/components/league-gate";
+import { useConnectedLeague } from "@/lib/use-connected-league";
 import { ShieldCheck, ArrowRight, Zap } from "lucide-react";
 
 export default function LineupPage() {
+  const league = useConnectedLeague();
+  if (league.status === "loading") return <LeagueGate state={league} />;
+  if (league.status === "connected") {
+    return <ConnectedDecisions leagueId={league.context.league.id} leagueName={league.context.league.name} eyebrow="Lineup lab" title="Start and sit decisions" description="Fresh lineup recommendations for your connected roster." kinds={["start", "sit"]} />;
+  }
+  if (process.env.NEXT_PUBLIC_DEMO_MODE !== "true") return <LeagueGate state={league} />;
+  return <DemoLineupPage />;
+}
+
+function DemoLineupPage() {
   const [activeCompare, setActiveCompare] = useState<(typeof demoStartSitPairs)[0] | null>(null);
 
   return (
