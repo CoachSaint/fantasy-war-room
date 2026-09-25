@@ -17,11 +17,11 @@ afterEach(() => {
 describe("provider identity and availability", () => {
   it("keeps only actual weekly projection fields, not ADP-only filler", () => {
     const rows = parseSleeperWeeklyProjections({
-      "96": { pts_ppr: 14.09, pts_half_ppr: 14.09, pts_std: 14.09, adp_dd_ppr: 161 },
+      "96": { pts_ppr: 14.09, pts_half_ppr: 14.09, pts_std: 14.09, pass_yd: 218.97, adp_dd_ppr: 161 },
       "19": { adp_dd_ppr: 1000 },
       invalid: { pts_ppr: 12 },
     }, 2026, 3, "2026-09-24T20:00:00.000Z");
-    expect(rows).toEqual([{ sleeperId: "96", season: 2026, week: 3, ppr: 14.09, halfPpr: 14.09, standard: 14.09, observedAt: "2026-09-24T20:00:00.000Z" }]);
+    expect(rows).toEqual([{ sleeperId: "96", season: 2026, week: 3, ppr: 14.09, halfPpr: 14.09, standard: 14.09, stats: { pass_yd: 218.97 }, observedAt: "2026-09-24T20:00:00.000Z" }]);
   });
   const league = {
     league_id: "league-1",

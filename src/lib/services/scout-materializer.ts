@@ -190,7 +190,7 @@ export async function materializeSleeperProjections(
     const rows = batch.map(({ item, playerId }) => {
       const fingerprint = createHash("sha256").update(JSON.stringify({
         sleeperId: item.sleeperId, season: item.season, week: item.week,
-        ppr: item.ppr, halfPpr: item.halfPpr, standard: item.standard,
+        ppr: item.ppr, halfPpr: item.halfPpr, standard: item.standard, stats: item.stats,
       })).digest("hex");
       return { item, playerId, fingerprint };
     });
@@ -203,6 +203,7 @@ export async function materializeSleeperProjections(
         projectedFantasyPointsPpr: item.ppr,
         projectedFantasyPointsHalfPpr: item.halfPpr,
         projectedFantasyPointsStandard: item.standard,
+        projectedStats: item.stats,
         projectionAccuracyVerified: false,
       },
       observed_at: item.observedAt,

@@ -6,6 +6,7 @@ import { errorResponse } from "@/lib/security/http";
 import { nflverse } from "@/lib/data/nflverse";
 import { sleeper } from "@/lib/data/sleeper";
 import { materializeGlobalNflverse, materializeSleeperProjections, ScoutMaterializationError } from "@/lib/services/scout-materializer";
+import { materializeYahooLineupForLeague, YahooLineupError } from "@/lib/services/yahoo-lineup";
 
 export const dynamic = "force-dynamic";
 
@@ -191,11 +192,44 @@ async function handleScoutRun(request: Request) {
   }
 
   const scoringStart = Date.now();
-  steps.push(step("feature_scoring", "skipped", scoringStart, 0, "league_context_required"));
+  let recommendationsMaterialized = 0;
+  try {
+    const leagueRows = await adminClient.from("leagues").select("id")
+      .eq("provider", "yahoo").eq("season", input.season).eq("current_week", input.week)
+      .limit(201);
+    if (leagueRows.error) throw new YahooLineupError("yahoo_league_lookup_failed");
+    if ((leagueRows.data || []).length > 200) throw new YahooLineupError("yahoo_league_limit_exceeded");
+    if (!leagueRows.data?.length) {
+      steps.push(step("feature_scoring", "skipped", scoringStart, 0, "current_yahoo_league_unavailable"));
+      steps.push(step("recommendation_materialization", "skipped", scoringStart, 0, "current_yahoo_league_unavailable"));
+    } else {
+      let playersScored = 0;
+      let completedLeagues = 0;
+      const skippedReasons: string[] = [];
+      for (const league of leagueRows.data) {
+        const result = await materializeYahooLineupForLeague(adminClient, String(league.id));
+        if (result.status === "skipped") {
+          skippedReasons.push(result.reason || "league_context_unavailable");
+          continue;
+        }
+        completedLeagues += 1;
+        playersScored += result.playersScored;
+        recommendationsMaterialized += result.recommendationsInserted;
+      }
+      const skippedReason = skippedReasons.length ? `skipped_leagues:${skippedReasons.length}` : undefined;
+      steps.push(step("feature_scoring", playersScored ? "success" : "skipped", scoringStart, playersScored,
+        playersScored ? skippedReason : skippedReasons[0] || "current_projection_unavailable"));
+      steps.push(step("recommendation_materialization", completedLeagues ? "success" : "skipped", scoringStart,
+        recommendationsMaterialized, completedLeagues ? skippedReason : skippedReasons[0] || "league_context_unavailable"));
+    }
+  } catch (error) {
+    const code = error instanceof YahooLineupError ? error.code : "lineup_materialization_failed";
+    failureCode ??= code;
+    steps.push(step("feature_scoring", "failed", scoringStart, 0, code));
+    steps.push(step("recommendation_materialization", "failed", scoringStart, recommendationsMaterialized, code));
+  }
   const diffStart = Date.now();
   steps.push(step("snapshot_diff", "skipped", diffStart, 0, "league_baseline_required"));
-  const materializeStart = Date.now();
-  steps.push(step("recommendation_materialization", "skipped", materializeStart, 0, "recommendation_materializer_not_configured"));
 
   const finishedAt = new Date();
   const hasFailures = Boolean(failureCode) || steps.some((entry) => entry.status === "failed");
@@ -220,6 +254,6 @@ async function handleScoutRun(request: Request) {
     finishedAt: finishedAt.toISOString(),
     steps,
     error: runError,
-    summary: { season: input.season, week: input.week, statsWeek, playersProcessed, evidenceIngested, recommendationsMaterialized: 0 },
+    summary: { season: input.season, week: input.week, statsWeek, playersProcessed, evidenceIngested, recommendationsMaterialized },
   }, { status: 503 });
 }

@@ -9,8 +9,15 @@ export interface SleeperWeeklyProjection {
   ppr: number | null;
   halfPpr: number | null;
   standard: number | null;
+  stats: Record<string, number>;
   observedAt: string;
 }
+
+const projectionStatKeys = new Set([
+  "pass_yd", "pass_td", "pass_int", "rush_att", "rush_yd", "rush_td",
+  "rec", "rec_yd", "rec_td", "pass_2pt", "rush_2pt", "rec_2pt",
+  "fum_lost", "st_td", "def_fum_td",
+]);
 
 function finiteProjection(value: unknown): number | null {
   const parsed = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : NaN;
@@ -22,14 +29,17 @@ export function parseSleeperWeeklyProjections(
   raw: unknown, season: number, week: number, observedAt = new Date().toISOString()
 ): SleeperWeeklyProjection[] {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return [];
-  return Object.entries(raw).flatMap(([sleeperId, stats]) => {
-    if (!/^\d+$/.test(sleeperId) || !stats || typeof stats !== "object" || Array.isArray(stats)) return [];
-    const row = stats as Record<string, unknown>;
+  return Object.entries(raw).flatMap(([sleeperId, rawStats]) => {
+    if (!/^\d+$/.test(sleeperId) || !rawStats || typeof rawStats !== "object" || Array.isArray(rawStats)) return [];
+    const row = rawStats as Record<string, unknown>;
     const ppr = finiteProjection(row.pts_ppr);
     const halfPpr = finiteProjection(row.pts_half_ppr);
     const standard = finiteProjection(row.pts_std);
     if (ppr == null && halfPpr == null && standard == null) return [];
-    return [{ sleeperId, season, week, ppr, halfPpr, standard, observedAt }];
+    const stats = Object.fromEntries(Object.entries(row)
+      .filter(([key, value]) => projectionStatKeys.has(key) && typeof value === "number" && Number.isFinite(value))
+      .map(([key, value]) => [key, Number(value)]));
+    return [{ sleeperId, season, week, ppr, halfPpr, standard, stats, observedAt }];
   });
 }
 
