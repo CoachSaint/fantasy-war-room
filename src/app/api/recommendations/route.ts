@@ -21,6 +21,30 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     ? payload.projectedPoints as Record<string, unknown> : null;
   const availabilitySourceUrl = typeof payload.availabilitySourceUrl === "string" ? payload.availabilitySourceUrl : "";
   const validAvailabilityUrl = availabilitySourceUrl.startsWith("https://fantasysports.yahooapis.com/fantasy/v2/league/");
+  const requestedWeeks = Array.isArray(payload.forecastOutlookWeeksRequested)
+    ? payload.forecastOutlookWeeksRequested.filter((week): week is number =>
+      typeof week === "number" && Number.isInteger(week) && week >= 0 && week <= 23).slice(0, 3)
+    : [];
+  const forecastWeeks = Array.isArray(payload.forecastOutlook)
+    ? payload.forecastOutlook.flatMap((value) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return [];
+      const row = value as Record<string, unknown>;
+      const week = row.week;
+      if (typeof week !== "number" || !requestedWeeks.includes(week)
+        || typeof row.addPoints !== "number" || !Number.isFinite(row.addPoints)
+        || typeof row.dropPoints !== "number" || !Number.isFinite(row.dropPoints)
+        || typeof row.edge !== "number" || !Number.isFinite(row.edge)
+        || typeof row.observedAt !== "string" || !Number.isFinite(Date.parse(row.observedAt))
+        || typeof row.sourceUrl !== "string"
+        || !new RegExp(`^https://api\\.sleeper\\.app/v1/projections/nfl/regular/\\d{4}/${week}$`).test(row.sourceUrl)) return [];
+      const assumedZeroYahooStatIds = Array.isArray(row.assumedZeroYahooStatIds)
+        ? row.assumedZeroYahooStatIds.filter((id): id is string =>
+          typeof id === "string" && /^\d{1,4}$/.test(id)).slice(0, 20)
+        : [];
+      return [{ week, addPoints: row.addPoints, dropPoints: row.dropPoints, edge: row.edge,
+        observedAt: row.observedAt, sourceUrl: row.sourceUrl, assumedZeroYahooStatIds }];
+    }).slice(0, 3)
+    : [];
   return {
     id: String(row.id),
     kind: row.kind as Recommendation["kind"],
@@ -35,6 +59,8 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     ...(validAvailabilityUrl && typeof payload.availabilityObservedAt === "string" && Number.isFinite(Date.parse(payload.availabilityObservedAt))
       ? { availability: { sourceUrl: availabilitySourceUrl, observedAt: payload.availabilityObservedAt,
           truncated: payload.availabilityTruncated === true } } : {}),
+    ...(requestedWeeks.length && forecastWeeks.length
+      ? { forecastOutlook: { requestedWeeks, weeks: forecastWeeks } } : {}),
     headline: String(row.headline),
     reasonCodes: Array.isArray(row.reason_codes) ? row.reason_codes.map(String) : [],
     evidenceIds: Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : [],

@@ -104,11 +104,21 @@ describe("Yahoo lineup hosted database integration", () => {
         { player_id: starterId, season: 2026, week: 3, source: "sleeper_weekly_projections", fingerprint: `${runId}-starter`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-starter", projectedStats: { rush_yd: 50, rush_td: 0 } } },
         { player_id: benchId, season: 2026, week: 3, source: "sleeper_weekly_projections", fingerprint: `${runId}-bench`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-bench", projectedStats: { rush_yd: 100, rush_td: 0 } } },
         { player_id: availableId, season: 2026, week: 3, source: "sleeper_weekly_projections", fingerprint: `${runId}-available`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-available", projectedStats: { rush_yd: 150, rush_td: 0 } } },
+        ...([4, 5] as const).flatMap((week) => ([
+          { player_id: starterId, season: 2026, week, source: "sleeper_weekly_projections", fingerprint: `${runId}-starter-${week}`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-starter", projectedStats: { rush_yd: 50 + week * 2, rush_td: 0 } } },
+          { player_id: benchId, season: 2026, week, source: "sleeper_weekly_projections", fingerprint: `${runId}-bench-${week}`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-bench", projectedStats: { rush_yd: 80 + week * 2, rush_td: 0 } } },
+          { player_id: availableId, season: 2026, week, source: "sleeper_weekly_projections", fingerprint: `${runId}-available-${week}`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-available", projectedStats: { rush_yd: 110 + week * 2, rush_td: 0 } } },
+        ])),
       ])).error);
       checked("insert source evidence", (await client.from("evidence").insert([
         { id: starterEvidenceId, player_id: starterId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-starter` },
         { id: benchEvidenceId, player_id: benchId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-bench` },
         { id: availableEvidenceId, player_id: availableId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-available` },
+        ...([4, 5] as const).flatMap((week) => ([
+          { id: randomUUID(), player_id: starterId, type: "projection", source: "sleeper_weekly_projections", source_url: `https://api.sleeper.app/v1/projections/nfl/regular/2026/${week}`, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-starter-${week}` },
+          { id: randomUUID(), player_id: benchId, type: "projection", source: "sleeper_weekly_projections", source_url: `https://api.sleeper.app/v1/projections/nfl/regular/2026/${week}`, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-bench-${week}` },
+          { id: randomUUID(), player_id: availableId, type: "projection", source: "sleeper_weekly_projections", source_url: `https://api.sleeper.app/v1/projections/nfl/regular/2026/${week}`, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-available-${week}` },
+        ])),
       ])).error);
       checked("insert availability scan", (await client.from("league_available_scans").insert({
         league_id: leagueId, scan_id: scanId, observed_at: asOf.toISOString(),
@@ -148,7 +158,15 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("read waiver recommendations", waiverRows.error);
       expect(waiverRows.data).toHaveLength(1);
       expect(waiverRows.data?.[0]).toMatchObject({ subject_player_id: availableId, alternative_player_id: benchId,
-        evidence_ids: [availableEvidenceId, benchEvidenceId], payload: { availabilityTruncated: false } });
+        evidence_ids: [availableEvidenceId, benchEvidenceId], payload: {
+          availabilityTruncated: false,
+          forecastOutlookWeeksRequested: [3, 4, 5],
+          forecastOutlook: [
+            { week: 3, addPoints: 15, dropPoints: 10, edge: 5 },
+            { week: 4, addPoints: 11.8, dropPoints: 8.8, edge: 3 },
+            { week: 5, addPoints: 12, dropPoints: 9, edge: 3 },
+          ],
+        } });
       const briefs = await client.from("daily_briefs").select("payload").eq("league_id", leagueId)
         .order("computed_at", { ascending: false }).limit(1);
       checked("read daily brief", briefs.error);
@@ -183,6 +201,12 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(ownerRecs.status).toBe(200);
       expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 } }] });
       expect((await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+      const ownerWaivers = await getRecommendations(new Request(`http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=add`,
+        { headers: { authorization: `Bearer ${ownerToken}` } }));
+      expect(ownerWaivers.status).toBe(200);
+      expect(await ownerWaivers.json()).toMatchObject({ data: [{ forecastOutlook: {
+        requestedWeeks: [3, 4, 5], weeks: [{ week: 3 }, { week: 4 }, { week: 5 }],
+      } }] });
 
       const coachUrl = "http://localhost:3000/api/coach/chat";
       const coachBody = JSON.stringify({ leagueId, messages: [{ role: "user", content: "Who should I start?" }] });

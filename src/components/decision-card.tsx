@@ -152,6 +152,31 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
                 {item.availability.truncated ? " Candidate scan was limited to the first 200 players." : ""}
               </div>
             )}
+            {item.forecastOutlook && (
+              <div style={{ display: "grid", gap: 8 }}>
+                <strong>Up to three weeks of source forecasts</strong>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+                  {item.forecastOutlook.requestedWeeks.map((week) => {
+                    const forecast = item.forecastOutlook?.weeks.find((row) => row.week === week);
+                    return <div key={week} style={{ border: "1px solid var(--line)", borderRadius: 10, padding: 8 }}>
+                      <strong>Week {week}</strong>
+                      {forecast ? (
+                        <>
+                          <div>{forecast.addPoints.toFixed(1)} vs {forecast.dropPoints.toFixed(1)} pts</div>
+                          <div className="muted">{forecast.edge >= 0 ? "+" : ""}{forecast.edge.toFixed(1)} point edge</div>
+                          {forecast.assumedZeroYahooStatIds.length > 0 && (
+                            <div className="muted">{forecast.assumedZeroYahooStatIds.length} missing stat projections treated as zero</div>
+                          )}
+                          <div className="muted">Checked {new Date(forecast.observedAt).toLocaleDateString()}</div>
+                          <a href={forecast.sourceUrl} target="_blank" rel="noopener noreferrer">Sleeper source</a>
+                        </>
+                      ) : <div className="muted">Forecast unavailable</div>}
+                    </div>;
+                  })}
+                </div>
+                <div className="muted">Forecast comparison only; it does not include opponent adjustments or a rest-of-season value claim.</div>
+              </div>
+            )}
             {itemEvidences.length > 0 ? (
               itemEvidences.map((ev) => (
                 <div key={ev.id} style={{ borderLeft: "2px solid var(--good)", paddingLeft: 8 }}>

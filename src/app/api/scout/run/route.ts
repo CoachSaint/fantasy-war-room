@@ -196,6 +196,33 @@ async function handleScoutRun(request: Request) {
     steps.push(step("projection_ingestion", "failed", projectionStart, 0, code));
   }
 
+  const outlookStart = Date.now();
+  const outlookWeeks = Array.from({ length: Math.max(0, Math.min(18, input.week + 2) - input.week) },
+    (_, offset) => input.week + offset + 1);
+  const outlookMaterializedWeeks: number[] = [];
+  let outlookSnapshotsInserted = 0;
+  if (outlookWeeks.length && crosswalk.sleeperIds.size) {
+    const forecasts = await Promise.allSettled(outlookWeeks.map((week) => sleeper.getWeeklyProjections(input.season, week)));
+    for (const [index, result] of forecasts.entries()) {
+      if (result.status !== "fulfilled" || !result.value.length) continue;
+      try {
+        const written = await materializeSleeperProjections(adminClient, result.value, crosswalk.sleeperIds);
+        if (!written.projectionsMapped) continue;
+        outlookMaterializedWeeks.push(outlookWeeks[index]);
+        outlookSnapshotsInserted += written.snapshotsInserted;
+      } catch {
+        // Future-week forecasts are optional. The waiver view reports only
+        // weeks whose source records were actually stored and verified.
+      }
+    }
+  }
+  steps.push({
+    ...step("outlook_projection_ingestion", outlookMaterializedWeeks.length ? "success" : "skipped",
+      outlookStart, outlookSnapshotsInserted,
+      outlookMaterializedWeeks.length === outlookWeeks.length ? undefined : "outlook_projection_incomplete"),
+    sourceWeeks: outlookMaterializedWeeks,
+  });
+
   const scoringStart = Date.now();
   const syncStart = Date.now();
   let recommendationsMaterialized = 0;

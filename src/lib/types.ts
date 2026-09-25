@@ -99,6 +99,11 @@ export interface Recommendation {
   confidenceMeaning?: "heuristic_source_coverage_not_outcome_probability";
   projectedPoints?: { recommended: number; current: number };
   availability?: { sourceUrl: string; observedAt: string; truncated: boolean };
+  forecastOutlook?: {
+    requestedWeeks: number[];
+    weeks: Array<{ week: number; addPoints: number; dropPoints: number; edge: number; observedAt: string;
+      sourceUrl: string; assumedZeroYahooStatIds: string[] }>;
+  };
   headline: string;
   reasonCodes: string[];
   evidenceIds: string[];

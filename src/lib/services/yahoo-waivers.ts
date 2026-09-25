@@ -53,6 +53,8 @@ export async function materializeYahooWaiversForLeague(
   if (!scoring?.statModifiers || typeof scoring.statModifiers !== "object") return skipped("scoring_rules_unavailable");
   const season = Number(league.data.season);
   const week = Number(league.data.current_week);
+  const forecastWeeks = Array.from({ length: 1 + Math.max(0, Math.min(18, week + 2) - week) },
+    (_, offset) => week + offset);
   const scan = await client.from("league_available_scans")
     .select("scan_id, observed_at, fresh_until, candidates_count, truncated, source_url")
     .eq("league_id", leagueId).maybeSingle();
@@ -113,16 +115,17 @@ export async function materializeYahooWaiversForLeague(
     const batch = ids.slice(offset, offset + 100);
     const [players, snapshots, evidence] = await Promise.all([
       client.from("players").select("id, full_name, position, status").in("id", batch),
-      client.from("player_snapshots").select("player_id, data, observed_at, fingerprint")
-        .eq("season", season).eq("week", week).eq("source", "sleeper_weekly_projections")
-        .in("player_id", batch).order("observed_at", { ascending: false }).limit(1001),
+      client.from("player_snapshots").select("player_id, week, data, observed_at, fingerprint")
+        .eq("season", season).in("week", forecastWeeks).eq("source", "sleeper_weekly_projections")
+        .in("player_id", batch).order("observed_at", { ascending: false }).limit(3001),
       client.from("evidence").select("id, player_id, observed_at, fingerprint")
         .eq("source", "sleeper_weekly_projections")
-        .eq("source_url", `https://api.sleeper.app/v1/projections/nfl/regular/${season}/${week}`)
-        .in("player_id", batch).order("observed_at", { ascending: false }).limit(1001),
+        .in("source_url", forecastWeeks.map((forecastWeek) =>
+          `https://api.sleeper.app/v1/projections/nfl/regular/${season}/${forecastWeek}`))
+        .in("player_id", batch).order("observed_at", { ascending: false }).limit(3001),
     ]);
     if (players.error || snapshots.error || evidence.error) throw new YahooWaiverError("waiver_projection_source_unavailable");
-    if ((snapshots.data || []).length > 1000 || (evidence.data || []).length > 1000) {
+    if ((snapshots.data || []).length > 3000 || (evidence.data || []).length > 3000) {
       throw new YahooWaiverError("waiver_projection_history_limit_exceeded");
     }
     playerRows.push(...(players.data || []));
@@ -131,11 +134,13 @@ export async function materializeYahooWaiversForLeague(
   }
   const playersById = new Map(playerRows.map((row) => [String(row.id), row]));
   const evidenceByFingerprint = new Map(evidenceRows.map((row) => [String(row.fingerprint), { id: String(row.id), playerId: String(row.player_id) }]));
-  const scored = new Map<string, ScoredPlayer>();
+  const scoredByWeek = new Map(forecastWeeks.map((forecastWeek) => [forecastWeek, new Map<string, ScoredPlayer>()]));
   for (const row of snapshotRows) {
     const id = String(row.player_id);
-    if (scored.has(id)) continue;
-    const projection = asProjection(row, season, week);
+    const forecastWeek = Number(row.week);
+    const weekScores = scoredByWeek.get(forecastWeek);
+    if (!weekScores || weekScores.has(id)) continue;
+    const projection = asProjection(row, season, forecastWeek);
     const player = playersById.get(id);
     const evidenceMatch = evidenceByFingerprint.get(`sleeper_projection_${String(row.fingerprint)}`);
     if (!projection || !player || evidenceMatch?.playerId !== id || !offensivePositions.has(String(player.position))) continue;
@@ -143,12 +148,15 @@ export async function materializeYahooWaiversForLeague(
     if (!Number.isFinite(age) || age < -5 * 60_000 || age > projectionAgeMs) continue;
     const points = scoreYahooOffenseProjection(projection, scoring.statModifiers);
     if (!points.ok) {
-      if (points.code === "unsupported_scoring_rules") return skipped(`unsupported_scoring_rules:${points.ids.join(",")}`);
+      if (forecastWeek === week && points.code === "unsupported_scoring_rules") {
+        return skipped(`unsupported_scoring_rules:${points.ids.join(",")}`);
+      }
       continue;
     }
-    scored.set(id, { id, name: String(player.full_name), position: String(player.position), points: points.points,
+    weekScores.set(id, { id, name: String(player.full_name), position: String(player.position), points: points.points,
       evidenceId: evidenceMatch.id, observedAt: projection.observedAt, assumedZeroStatIds: points.assumedZeroStatIds });
   }
+  const scored = scoredByWeek.get(week)!;
   const recommendations = [];
   for (const member of members) {
     const rosterId = String(member.roster_id);
@@ -171,6 +179,16 @@ export async function materializeYahooWaiversForLeague(
       rosterRecommendations += 1;
       const edge = Math.round(pair.edge * 100) / 100;
       const assumptions = [...new Set([...pair.candidate.assumedZeroStatIds, ...pair.drop.assumedZeroStatIds])];
+      const forecastOutlook = forecastWeeks.flatMap((forecastWeek) => {
+        const forecastCandidate = scoredByWeek.get(forecastWeek)?.get(pair.candidate.id);
+        const forecastDrop = scoredByWeek.get(forecastWeek)?.get(pair.drop.id);
+        if (!forecastCandidate || !forecastDrop) return [];
+        return [{ week: forecastWeek, addPoints: forecastCandidate.points, dropPoints: forecastDrop.points,
+          edge: Math.round((forecastCandidate.points - forecastDrop.points) * 100) / 100,
+          observedAt: new Date(Math.min(Date.parse(forecastCandidate.observedAt), Date.parse(forecastDrop.observedAt))).toISOString(),
+          assumedZeroYahooStatIds: [...new Set([...forecastCandidate.assumedZeroStatIds, ...forecastDrop.assumedZeroStatIds])],
+          sourceUrl: `https://api.sleeper.app/v1/projections/nfl/regular/${season}/${forecastWeek}` }];
+      });
       recommendations.push({
         league_id: leagueId, roster_id: rosterId, user_id: String(member.user_id), kind: "add",
         subject_player_id: pair.candidate.id, alternative_player_id: pair.drop.id,
@@ -191,7 +209,9 @@ export async function materializeYahooWaiversForLeague(
           projectedPoints: { recommended: pair.candidate.points, current: pair.drop.points },
           confidenceMeaning: "heuristic_source_coverage_not_outcome_probability",
           assumedZeroYahooStatIds: assumptions,
-          scope: "current_week_bench_upgrade_only_no_faab_or_ros_claim",
+          forecastOutlook,
+          forecastOutlookWeeksRequested: forecastWeeks,
+          scope: "current_week_bench_upgrade_with_source_backed_outlook_no_faab_or_ros_claim",
         },
       });
     }
