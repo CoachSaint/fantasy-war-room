@@ -8,6 +8,7 @@ import { refreshYahooDecisionsAfterImport } from "../src/lib/services/yahoo-deci
 import { runYahooSync } from "../src/lib/integrations/yahoo-runner";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
+import { GET as getPlayers } from "../src/app/api/players/route";
 import { POST as askCoach } from "../src/app/api/coach/chat/route";
 import { GET as runScout } from "../src/app/api/scout/run/route";
 
@@ -113,6 +114,12 @@ describe("Yahoo lineup hosted database integration", () => {
           { player_id: availableId, season: 2026, week, source: "sleeper_weekly_projections", fingerprint: `${runId}-available-${week}`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-available", projectedStats: { rush_yd: 110 + week * 2, rush_td: 0 } } },
         ])),
       ])).error);
+      checked("insert observed game snapshots", (await client.from("player_snapshots").insert(
+        [1, 2, 3].map((week) => ({ player_id: starterId, season: 2026, week,
+          source: "nflverse_stats_player", fingerprint: `${runId}-actual-${week}`,
+          observed_at: asOf.toISOString(), data: { actualFantasyPoints: week * 4,
+            snapShare: 70 + week, targetShare: 20 + week } }))
+      )).error);
       checked("insert source evidence", (await client.from("evidence").insert([
         { id: starterEvidenceId, player_id: starterId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-starter` },
         { id: benchEvidenceId, player_id: benchId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-bench` },
@@ -205,6 +212,15 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(ownerRecs.status).toBe(200);
       expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 } }] });
       expect((await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+      const playerUrl = `http://localhost:3000/api/players?leagueId=${leagueId}&playerId=${starterId}`;
+      const ownerPlayer = await getPlayers(new Request(playerUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
+      expect(ownerPlayer.status).toBe(200);
+      const playerBody = await ownerPlayer.json();
+      expect(playerBody.snapshots.filter((row: { source: string }) => row.source === "nflverse_stats_player")
+        .map((row: { week: number }) => row.week)).toEqual([3, 2, 1]);
+      expect(playerBody.snapshots.filter((row: { source: string }) => row.source === "sleeper_weekly_projections"))
+        .toHaveLength(3);
+      expect((await getPlayers(new Request(playerUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
       const ownerWaivers = await getRecommendations(new Request(`http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=add`,
         { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerWaivers.status).toBe(200);

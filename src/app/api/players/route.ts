@@ -23,14 +23,28 @@ export async function GET(request: Request) {
       .limit(1);
     if (assigned.error) return errorResponse("players_unavailable", 503);
     if (!assigned.data?.length) return errorResponse("player_not_in_league", 404);
-    const [player, snapshots, evidence] = await Promise.all([
+    const [player, forecasts, observed, evidence] = await Promise.all([
       client.from("players").select("id, full_name, team, position, status, updated_at").eq("id", playerId).maybeSingle(),
-      client.from("player_snapshots").select("season, week, data, observed_at, source").eq("player_id", playerId).order("observed_at", { ascending: false }).limit(10),
+      client.from("player_snapshots").select("season, week, data, observed_at, source")
+        .eq("player_id", playerId).eq("source", "sleeper_weekly_projections")
+        .order("observed_at", { ascending: false }).limit(9),
+      client.from("player_snapshots").select("season, week, data, observed_at, source")
+        .eq("player_id", playerId).eq("source", "nflverse_stats_player")
+        .order("season", { ascending: false }).order("week", { ascending: false })
+        .order("observed_at", { ascending: false }).limit(15),
       client.from("evidence").select("id, type, source, source_url, summary, confidence, published_at, observed_at").eq("player_id", playerId).order("observed_at", { ascending: false }).limit(20),
     ]);
-    if (player.error || snapshots.error || evidence.error) return errorResponse("players_unavailable", 503);
+    if (player.error || forecasts.error || observed.error || evidence.error) return errorResponse("players_unavailable", 503);
     if (!player.data) return errorResponse("player_not_in_league", 404);
-    return NextResponse.json({ ok: true, source: "connected", player: player.data, snapshots: snapshots.data || [], evidence: evidence.data || [] });
+    const seenWeeks = new Set<string>();
+    const recentObserved = (observed.data || []).filter((snapshot) => {
+      const key = `${snapshot.season}:${snapshot.week}`;
+      if (seenWeeks.has(key)) return false;
+      seenWeeks.add(key);
+      return true;
+    }).slice(0, 3);
+    return NextResponse.json({ ok: true, source: "connected", player: player.data,
+      snapshots: [...(forecasts.data || []), ...recentObserved], evidence: evidence.data || [] });
   }
 
   const assignments = await client.from("roster_assignments")

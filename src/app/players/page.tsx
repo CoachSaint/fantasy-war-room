@@ -76,6 +76,20 @@ function ConnectedPlayersPage({ leagueId, leagueName, season, week }: { leagueId
     .filter((snapshot) => snapshot.source === "nflverse_stats_player" &&
       typeof snapshot.data?.actualFantasyPoints === "number" && Number.isFinite(snapshot.data.actualFantasyPoints))
     .sort((a, b) => b.season - a.season || b.week - a.week).slice(0, 3);
+  const latestObservedUsage = actualHistory.find((snapshot) =>
+    ["snapShare", "targetShare", "rushShare", "redZoneShare"].some((key) =>
+      typeof snapshot.data?.[key] === "number" && Number.isFinite(snapshot.data[key])));
+  const usageInputs: Array<[string, unknown]> = latestObservedUsage ? [
+    ["Snap share", latestObservedUsage.data.snapShare],
+    ["Target share", latestObservedUsage.data.targetShare],
+    ["Rush share", latestObservedUsage.data.rushShare],
+    ["Red-zone share", latestObservedUsage.data.redZoneShare],
+  ] : [];
+  const usageMetrics = usageInputs.filter((row): row is [string, number] =>
+    typeof row[1] === "number" && Number.isFinite(row[1]) && row[1] >= 0 && row[1] <= 100);
+  const observedChange = actualHistory.length >= 2
+    ? Number((Number(actualHistory[0].data.actualFantasyPoints)
+      - Number(actualHistory[actualHistory.length - 1].data.actualFantasyPoints)).toFixed(1)) : null;
   const ppr = currentProjection?.data?.projectedFantasyPointsPpr;
   const halfPpr = currentProjection?.data?.projectedFantasyPointsHalfPpr;
   const standard = currentProjection?.data?.projectedFantasyPointsStandard;
@@ -109,6 +123,24 @@ function ConnectedPlayersPage({ leagueId, leagueName, season, week }: { leagueId
                   </div>
                   <p className="muted" style={{ margin: 0, fontSize: 12 }}>Published game results from nflverse; these are not future forecasts.</p>
                 </> : <p className="muted" style={{ margin: 0 }}>No recent published game results for this player.</p>}
+              </section>
+              <section aria-label="Observed player usage" style={{ display: "grid", gap: 8 }}>
+                <h3 style={{ margin: 0, fontSize: 16 }}>Recent role and usage</h3>
+                {observedChange != null && (
+                  <p className="muted" style={{ margin: 0 }}>Observed PPR change from Week {actualHistory[actualHistory.length - 1].week} to Week {actualHistory[0].week}: {observedChange > 0 ? "+" : ""}{observedChange} points. This is past performance, not a forecast.</p>
+                )}
+                {latestObservedUsage && usageMetrics.length ? (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(110px, 1fr))", gap: 8 }}>
+                      {usageMetrics.map(([label, value]) => (
+                        <div key={label} style={{ padding: 10, border: "1px solid var(--line)", borderRadius: 10 }}>
+                          <strong>{Math.round(value)}%</strong><span className="muted" style={{ display: "block", fontSize: 12 }}>{label}</span>
+                        </div>
+                      ))}
+                    </div>
+                    <p className="muted" style={{ margin: 0, fontSize: 12 }}>Observed Week {latestObservedUsage.week} nflverse usage, not a projected role.</p>
+                  </>
+                ) : <p className="muted" style={{ margin: 0 }}>No source-backed usage shares are available for recent games.</p>}
               </section>
               <h3 style={{ marginBottom: 0 }}>Evidence</h3>
               {detail.evidence.length === 0 ? <p className="muted">No evidence has been saved for this player.</p> : detail.evidence.map((item) => <article key={item.id} style={{ borderTop: "1px solid var(--line)", paddingTop: 10 }}><strong>{item.type.replaceAll("_", " ")}</strong><p style={{ margin: "4px 0" }}>{item.summary}</p><span className="muted" style={{ fontSize: 12 }}>{item.source} · {new Date(item.observed_at).toLocaleString()}</span>{item.source_url && <a href={item.source_url} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>Source</a>}</article>)}
