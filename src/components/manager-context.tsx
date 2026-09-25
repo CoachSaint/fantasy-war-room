@@ -74,15 +74,12 @@ export function ManagerContext() {
   }
 
   const league = isRecord(state.context.league) ? state.context.league : state.context;
-  const manager = isRecord(state.context.manager) ? state.context.manager : {};
+  const roster = isRecord(state.context.roster) ? state.context.roster : {};
   const leagueName = text(league.name) ?? text(league.leagueName);
-  const leagueId = text(league.leagueId) ?? text(league.id);
-  const managerName = text(manager.displayName) ?? text(manager.name);
-  const managerLabel = managerName ? "Manager: " + managerName : "Manager identity not reported";
-  const leagueLabel = leagueId ? " · " + leagueId : "";
+  const rosterName = text(roster.name);
   return (
     <aside className="context-strip" aria-label="Active manager context">
-      <div><strong>{leagueName ?? "Connected league"}</strong><span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>{managerLabel + leagueLabel}</span></div>
+      <div><strong>{leagueName ?? "Connected league"}</strong><span className="muted" style={{ marginLeft: 8, fontSize: 12 }}>{rosterName ? "Your roster: " + rosterName : "Roster name unavailable"}</span></div>
       <div style={{ display: "flex", gap: 14, flexWrap: "wrap" }}>
         <Link href="/history" style={{ color: "var(--good)", fontWeight: 700 }}>History</Link>
         <Link href="/accuracy" style={{ color: "var(--good)", fontWeight: 700 }}>Accuracy</Link>
