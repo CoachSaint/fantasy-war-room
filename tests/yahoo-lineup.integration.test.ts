@@ -79,6 +79,13 @@ describe("Yahoo lineup hosted database integration", () => {
           provider_roster_id: `fixture-${runId}`, current_faab: 72 },
         { id: opponentRosterId, league_id: leagueId, provider_roster_id: `fixture-opponent-${runId}` },
       ])).error);
+      checked("insert Yahoo matchup fixture", (await client.from("league_week_matchups").insert({
+        league_id: leagueId, provider: "yahoo", week: 3,
+        provider_matchup_key: `fixture-${runId}|fixture-opponent-${runId}`,
+        team_a_roster_id: rosterId, team_b_roster_id: opponentRosterId,
+        team_a_projected_points: 110.5, team_b_projected_points: 99.25,
+        status: "pre_event", observed_at: asOf.toISOString(),
+      })).error);
       checked("insert membership", (await client.from("league_memberships").insert({
         league_id: leagueId, user_id: userId, roster_id: rosterId,
       })).error);
@@ -210,7 +217,8 @@ describe("Yahoo lineup hosted database integration", () => {
       const recUrl = `http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=start`;
       const ownerRecs = await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerRecs.status).toBe(200);
-      expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 } }] });
+      expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 },
+        teamMatchup: { week: 3, ownProjectedPoints: 110.5, opponentProjectedPoints: 99.25, status: "pre_event" } }] });
       expect((await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
       const playerUrl = `http://localhost:3000/api/players?leagueId=${leagueId}&playerId=${starterId}`;
       const ownerPlayer = await getPlayers(new Request(playerUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
@@ -299,6 +307,7 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("cleanup membership", (await client.from("league_memberships").delete().eq("league_id", leagueId)).error);
       checked("cleanup league sync marker", (await client.from("provider_league_links").delete().eq("connection_id", connectionId)).error);
       checked("cleanup fixture connection", (await client.from("provider_connections").delete().eq("id", connectionId)).error);
+      checked("cleanup Yahoo matchup fixture", (await client.from("league_week_matchups").delete().eq("league_id", leagueId)).error);
       checked("cleanup roster", (await client.from("rosters").delete().eq("league_id", leagueId)).error);
       checked("cleanup league", (await client.from("leagues").delete().eq("id", leagueId)).error);
       checked("cleanup snapshots", (await client.from("player_snapshots").delete().in("player_id", [starterId, benchId, availableId])).error);

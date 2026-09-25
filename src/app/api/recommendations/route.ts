@@ -19,6 +19,16 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     ? row.payload as Record<string, unknown> : {};
   const projectedPoints = payload.projectedPoints && typeof payload.projectedPoints === "object" && !Array.isArray(payload.projectedPoints)
     ? payload.projectedPoints as Record<string, unknown> : null;
+  const matchup = payload.teamMatchup && typeof payload.teamMatchup === "object" && !Array.isArray(payload.teamMatchup)
+    ? payload.teamMatchup as Record<string, unknown> : null;
+  const validMatchup = matchup && typeof matchup.week === "number" && Number.isInteger(matchup.week)
+    && matchup.week >= 1 && matchup.week <= 23
+    && typeof matchup.ownProjectedPoints === "number" && Number.isFinite(matchup.ownProjectedPoints)
+    && matchup.ownProjectedPoints >= 0
+    && typeof matchup.opponentProjectedPoints === "number" && Number.isFinite(matchup.opponentProjectedPoints)
+    && matchup.opponentProjectedPoints >= 0
+    && typeof matchup.observedAt === "string" && Number.isFinite(Date.parse(matchup.observedAt))
+    && typeof matchup.status === "string" && matchup.status.length <= 40;
   const availabilitySourceUrl = typeof payload.availabilitySourceUrl === "string" ? payload.availabilitySourceUrl : "";
   const validAvailabilityUrl = availabilitySourceUrl.startsWith("https://fantasysports.yahooapis.com/fantasy/v2/league/");
   const faab = payload.faabRange && typeof payload.faabRange === "object" && !Array.isArray(payload.faabRange)
@@ -67,6 +77,11 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
       ? { confidenceMeaning: payload.confidenceMeaning } : {}),
     ...(projectedPoints && Number.isFinite(projectedPoints.recommended) && Number.isFinite(projectedPoints.current)
       ? { projectedPoints: { recommended: Number(projectedPoints.recommended), current: Number(projectedPoints.current) } } : {}),
+    ...(validMatchup && matchup ? { teamMatchup: {
+      week: matchup.week as number, ownProjectedPoints: matchup.ownProjectedPoints as number,
+      opponentProjectedPoints: matchup.opponentProjectedPoints as number,
+      observedAt: matchup.observedAt as string, status: matchup.status as string,
+    } } : {}),
     ...(validAvailabilityUrl && typeof payload.availabilityObservedAt === "string" && Number.isFinite(Date.parse(payload.availabilityObservedAt))
       ? { availability: { sourceUrl: availabilitySourceUrl, observedAt: payload.availabilityObservedAt,
           truncated: payload.availabilityTruncated === true } } : {}),

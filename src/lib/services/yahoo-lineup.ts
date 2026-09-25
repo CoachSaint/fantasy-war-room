@@ -80,6 +80,26 @@ export async function materializeYahooLineupForLeague(
     return !Number.isFinite(age) || age < -5 * 60_000 || age > 6 * 60 * 60_000;
   })) return skipped("yahoo_roster_sync_stale");
   const rosterSyncedAt = new Map((rosterState.data || []).map((row) => [String(row.id), new Date(String(row.updated_at)).getTime()]));
+  const matchupRows = await client.from("league_week_matchups")
+    .select("team_a_roster_id, team_b_roster_id, team_a_projected_points, team_b_projected_points, status, observed_at")
+    .eq("league_id", leagueId).eq("week", week).limit(33);
+  if (matchupRows.error) throw new YahooLineupError("league_matchup_unavailable");
+  if ((matchupRows.data || []).length > 32) throw new YahooLineupError("league_matchup_too_large");
+  const matchupByRoster = new Map<string, { week: number; ownProjectedPoints: number;
+    opponentProjectedPoints: number; status: string; observedAt: string }>();
+  for (const row of matchupRows.data || []) {
+    const own = Number(row.team_a_projected_points);
+    const opponent = Number(row.team_b_projected_points);
+    const observedAt = String(row.observed_at);
+    const age = asOf.getTime() - new Date(observedAt).getTime();
+    if (row.team_a_projected_points == null || row.team_b_projected_points == null ||
+        !Number.isFinite(own) || !Number.isFinite(opponent) || own < 0 || opponent < 0 ||
+        !Number.isFinite(age) || age < -5 * 60_000 || age > 6 * 60 * 60_000) continue;
+    matchupByRoster.set(String(row.team_a_roster_id), { week, ownProjectedPoints: own,
+      opponentProjectedPoints: opponent, status: String(row.status), observedAt });
+    matchupByRoster.set(String(row.team_b_roster_id), { week, ownProjectedPoints: opponent,
+      opponentProjectedPoints: own, status: String(row.status), observedAt });
+  }
   const assignments = await client.from("roster_assignments")
     .select("roster_id, player_id, designation, provider_status")
     .eq("league_id", leagueId).in("roster_id", rosterIds).limit(1001);
@@ -137,6 +157,7 @@ export async function materializeYahooLineupForLeague(
   for (const member of members) {
     const rosterId = String(member.roster_id);
     const rosterFreshUntil = rosterSyncedAt.get(rosterId)! + 6 * 60 * 60_000;
+    const teamMatchup = matchupByRoster.get(rosterId);
     const rosterAssignments = (assignments.data || []).filter((row) => String(row.roster_id) === rosterId);
     const starters = rosterAssignments.filter((row) => row.designation === "starter");
     const bench = rosterAssignments.filter((row) => row.designation === "bench");
@@ -179,6 +200,7 @@ export async function materializeYahooLineupForLeague(
           scoringSource: "yahoo_stat_modifiers",
           targetSeason: season, targetWeek: week,
           projectedPoints: { recommended: best.score.points, current: currentScore.points },
+          ...(teamMatchup ? { teamMatchup } : {}),
           confidenceMeaning: "heuristic_source_coverage_not_outcome_probability",
           assumedZeroYahooStatIds: assumed,
           scorer: "same_position_projection_edge_v1",

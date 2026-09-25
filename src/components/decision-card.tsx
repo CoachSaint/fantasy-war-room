@@ -100,6 +100,14 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
         </div>
       )}
 
+      {item.kind === "start" && item.teamMatchup && (
+        <div style={{ padding: 12, borderRadius: 12, background: "var(--surface)", border: "1px solid var(--line)", fontSize: 12.5 }}>
+          <strong>Yahoo Week {item.teamMatchup.week} team matchup</strong>
+          <div>{item.teamMatchup.ownProjectedPoints.toFixed(1)} projected team points vs {item.teamMatchup.opponentProjectedPoints.toFixed(1)} for the opponent.</div>
+          <div className="muted">Yahoo scoreboard checked {new Date(item.teamMatchup.observedAt).toLocaleString()}. This team context is not an opponent adjustment to the player forecast.</div>
+        </div>
+      )}
+
       {/* Confidence & Evidence Footer */}
       <div style={{ borderTop: "1px solid var(--line)", paddingTop: 14, display: "flex", flexDirection: "column", gap: 10 }}>
         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, alignItems: "center" }}>
