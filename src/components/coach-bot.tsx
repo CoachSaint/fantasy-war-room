@@ -189,10 +189,10 @@ export function CoachBot() {
           style={{
             position: "fixed",
             right: 24,
-            bottom: "var(--coach-bottom)",
+            bottom: "var(--coach-dialog-bottom)",
             zIndex: 50,
             width: "min(440px, calc(100vw - 32px))",
-            height: "min(620px, calc(100vh - var(--coach-bottom) - 24px))",
+            height: "min(620px, calc(100vh - var(--coach-dialog-bottom) - 24px))",
             display: "flex",
             flexDirection: "column",
             borderRadius: 24,
@@ -288,6 +288,7 @@ export function CoachBot() {
           <div
             style={{
               flex: 1,
+              minHeight: 0,
               padding: 16,
               overflowY: "auto",
               display: "flex",
