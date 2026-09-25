@@ -1,8 +1,8 @@
 import { NextResponse } from "next/server";
-import { timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { createAdminClient, hasAdminCredentials } from "@/lib/supabase/admin";
 import { errorResponse } from "@/lib/security/http";
+import { cronAuthorized } from "@/lib/security/cron";
 import { nflverse } from "@/lib/data/nflverse";
 import { sleeper } from "@/lib/data/sleeper";
 import { materializeGlobalNflverse, materializeSleeperProjections, ScoutMaterializationError } from "@/lib/services/scout-materializer";
@@ -20,15 +20,6 @@ const inputSchema = z.object({
 type ScoutInput = { season: number; week: number };
 
 class NflStateUnavailableError extends Error {}
-
-function isAuthorized(request: Request): boolean {
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret) return false;
-  const value = request.headers.get("authorization")?.trim();
-  const expected = `Bearer ${cronSecret}`;
-  if (!value || value.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(value), Buffer.from(expected));
-}
 
 interface StepDetail {
   name: string;
@@ -85,7 +76,7 @@ export async function POST(request: Request) {
 
 async function handleScoutRun(request: Request) {
   if (!process.env.CRON_SECRET) return errorResponse("cron_secret_unconfigured", 503);
-  if (!isAuthorized(request)) return errorResponse("unauthorized", 401);
+  if (!cronAuthorized(request)) return errorResponse("unauthorized", 401);
 
   let input: ScoutInput;
   try {

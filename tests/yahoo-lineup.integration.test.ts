@@ -5,6 +5,7 @@ import { materializeYahooLineupForLeague } from "../src/lib/services/yahoo-lineu
 import { materializeDailyBriefForLeague } from "../src/lib/services/daily-brief";
 import { materializeYahooWaiversForLeague } from "../src/lib/services/yahoo-waivers";
 import { refreshYahooDecisionsAfterImport } from "../src/lib/services/yahoo-decision-refresh";
+import { runYahooSync } from "../src/lib/integrations/yahoo-runner";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
 
@@ -50,6 +51,9 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("create disposable user", user.error);
       if (!user.data.user) throw new Error("disposable_user_missing");
       userId = user.data.user.id;
+      const noConsent = await runYahooSync(client, userId);
+      expect(noConsent.status).toBe(409);
+      expect(await noConsent.json()).toMatchObject({ error: "yahoo_connection_required" });
       const outsider = await client.auth.admin.createUser({ email: outsiderEmail, password, email_confirm: true });
       checked("create disposable outsider", outsider.error);
       if (!outsider.data.user) throw new Error("disposable_outsider_missing");

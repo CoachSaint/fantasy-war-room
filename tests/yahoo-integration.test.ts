@@ -16,6 +16,7 @@ import { GET as yahooStatusGET } from "../src/app/api/integrations/yahoo/status/
 import { GET as yahooStartGET } from "../src/app/api/integrations/yahoo/start/route";
 import { GET as yahooCallbackGET } from "../src/app/api/integrations/yahoo/callback/route";
 import { POST as yahooSyncPOST } from "../src/app/api/integrations/yahoo/sync/route";
+import { POST as yahooRefreshPOST } from "../src/app/api/integrations/yahoo/refresh/route";
 
 const originalEnv = {
   clientId: process.env.YAHOO_CLIENT_ID,
@@ -23,6 +24,7 @@ const originalEnv = {
   redirectUri: process.env.YAHOO_REDIRECT_URI,
   encryptionKey: process.env.YAHOO_TOKEN_ENCRYPTION_KEY,
   scope: process.env.YAHOO_OAUTH_SCOPE,
+  cronSecret: process.env.CRON_SECRET,
 };
 
 function setValidEnvironment() {
@@ -36,13 +38,28 @@ function setValidEnvironment() {
 afterEach(() => {
   vi.restoreAllMocks();
   for (const [key, value] of Object.entries(originalEnv)) {
-    const envName = ({ clientId: "YAHOO_CLIENT_ID", clientSecret: "YAHOO_CLIENT_SECRET", redirectUri: "YAHOO_REDIRECT_URI", encryptionKey: "YAHOO_TOKEN_ENCRYPTION_KEY", scope: "YAHOO_OAUTH_SCOPE" } as const)[key as keyof typeof originalEnv];
+    const envName = ({ clientId: "YAHOO_CLIENT_ID", clientSecret: "YAHOO_CLIENT_SECRET", redirectUri: "YAHOO_REDIRECT_URI", encryptionKey: "YAHOO_TOKEN_ENCRYPTION_KEY", scope: "YAHOO_OAUTH_SCOPE", cronSecret: "CRON_SECRET" } as const)[key as keyof typeof originalEnv];
     if (value === undefined) delete process.env[envName];
     else process.env[envName] = value;
   }
 });
 
 describe("Yahoo OAuth queue", () => {
+  it("rejects scheduled refresh without the exact cron bearer", async () => {
+    setValidEnvironment();
+    process.env.CRON_SECRET = "fixture-cron-secret";
+    const url = "http://localhost/api/integrations/yahoo/refresh";
+    for (const request of [
+      new Request(url, { method: "POST" }),
+      new Request(`${url}?secret=fixture-cron-secret`, { method: "POST" }),
+      new Request(url, { method: "POST", headers: { "x-cron-secret": "fixture-cron-secret" } }),
+      new Request(url, { method: "POST", headers: { authorization: "Bearer wrong-secret" } }),
+    ]) {
+      const response = await yahooRefreshPOST(request);
+      expect(response.status).toBe(401);
+    }
+  });
+
   it("stays inert and reports awaiting credentials when approval values are absent", async () => {
     delete process.env.YAHOO_CLIENT_ID;
     delete process.env.YAHOO_CLIENT_SECRET;
