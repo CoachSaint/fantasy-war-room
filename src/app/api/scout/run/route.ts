@@ -5,7 +5,7 @@ import { errorResponse } from "@/lib/security/http";
 import { cronAuthorized } from "@/lib/security/cron";
 import { nflverse } from "@/lib/data/nflverse";
 import { sleeper } from "@/lib/data/sleeper";
-import { materializeGlobalNflverse, materializeSleeperProjections, ScoutMaterializationError } from "@/lib/services/scout-materializer";
+import { materializeGlobalNflverse, materializeNflverseRosterPlayers, materializeSleeperProjections, ScoutMaterializationError } from "@/lib/services/scout-materializer";
 import { materializeYahooLineupForLeague, YahooLineupError } from "@/lib/services/yahoo-lineup";
 import { materializeDailyBriefForLeague, DailyBriefError } from "@/lib/services/daily-brief";
 import { materializeYahooWaiversForLeague, YahooWaiverError } from "@/lib/services/yahoo-waivers";
@@ -127,6 +127,21 @@ async function handleScoutRun(request: Request) {
   const syncStart = Date.now();
   steps.push(step("league_roster_sync", "skipped", syncStart, 0, "league_sync_not_configured"));
 
+  const rosterStart = Date.now();
+  const crosswalk = await nflverse.getYahooCrosswalk(input);
+  if (!crosswalk.players.size) {
+    steps.push(step("roster_identity_seed", "skipped", rosterStart, 0, "roster_provider_unavailable"));
+  } else {
+    try {
+      const mapped = await materializeNflverseRosterPlayers(adminClient, crosswalk.players);
+      steps.push({ ...step("roster_identity_seed", "success", rosterStart, mapped), sourceWeek: crosswalk.week! });
+    } catch (error) {
+      const code = error instanceof ScoutMaterializationError ? error.code : "roster_identity_seed_failed";
+      failureCode ??= code;
+      steps.push(step("roster_identity_seed", "failed", rosterStart, 0, code));
+    }
+  }
+
   const fetchStart = Date.now();
   try {
     const [stats, evidence] = await Promise.all([
@@ -163,10 +178,7 @@ async function handleScoutRun(request: Request) {
 
   const projectionStart = Date.now();
   try {
-    const [projections, crosswalk] = await Promise.all([
-      sleeper.getWeeklyProjections(input.season, input.week),
-      nflverse.getYahooCrosswalk(input),
-    ]);
+    const projections = await sleeper.getWeeklyProjections(input.season, input.week);
     if (!projections.length || !crosswalk.sleeperIds.size) {
       steps.push(step("projection_ingestion", "skipped", projectionStart, 0,
         projections.length ? "projection_crosswalk_unavailable" : "projection_provider_unavailable"));

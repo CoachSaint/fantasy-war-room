@@ -53,6 +53,7 @@ export interface NflverseRawInjury {
   player_name?: string;
   team?: string;
   club_code?: string;
+  position?: string;
   season?: number | string;
   week?: number | string;
   report_status?: string;
@@ -74,7 +75,7 @@ export interface NflverseSnapshot extends PlayerSnapshot {
 export interface NflverseAdapter {
   getPlayerSnapshots(input: { season: number; week: number }): Promise<NflverseSnapshot[]>;
   getLatestAvailablePlayerSnapshots(input: { season: number; week: number }): Promise<{ week: number | null; snapshots: NflverseSnapshot[] }>;
-  getYahooCrosswalk(input: { season: number; week: number }): Promise<{ week: number | null; ids: Map<string, string>; sleeperIds: Map<string, string> }>;
+  getYahooCrosswalk(input: { season: number; week: number }): Promise<NflverseCrosswalk>;
   getEvidence(input: { season: number; week: number }): Promise<Evidence[]>;
   parsePlayerStats(data: NflverseRawStat[], season: number, week: number): PlayerSnapshot[];
   parseDepthCharts(data: NflverseRawDepth[], season: number, week: number): Evidence[];
@@ -261,12 +262,32 @@ export interface NflverseWeeklyRosterId {
   gsis_id?: string;
   yahoo_id?: string;
   sleeper_id?: string;
+  full_name?: string;
+  team?: string;
+  position?: string;
+  status?: string;
 }
 
-/** Exact Yahoo numeric ID to GSIS ID pairs from the current season roster. */
+export interface NflverseRosterPlayer {
+  fullName: string;
+  team: string | null;
+  position: "QB" | "RB" | "WR" | "TE" | "K";
+  status: string | null;
+}
+
+export interface NflverseCrosswalk {
+  week: number | null;
+  ids: Map<string, string>;
+  sleeperIds: Map<string, string>;
+  players: Map<string, NflverseRosterPlayer>;
+}
+
+const fantasyRosterPositions = new Set<NflverseRosterPlayer["position"]>(["QB", "RB", "WR", "TE", "K"]);
+
+/** Exact provider IDs and fantasy player records from one published roster week. */
 export function parseYahooCrosswalk(
   data: NflverseWeeklyRosterId[], season: number, requestedWeek: number
-): { week: number | null; ids: Map<string, string>; sleeperIds: Map<string, string> } {
+): NflverseCrosswalk {
   const eligible = data.filter((row) =>
     numberValue(row.season) === season &&
     (row.game_type === "REG" || row.game_type === "POST") &&
@@ -274,14 +295,24 @@ export function parseYahooCrosswalk(
     /^00-\d+$/.test(String(row.gsis_id || ""))
   );
   const week = eligible.length ? Math.max(...eligible.map((row) => numberValue(row.week)!)) : null;
-  if (week == null) return { week: null, ids: new Map(), sleeperIds: new Map() };
+  if (week == null) return { week: null, ids: new Map(), sleeperIds: new Map(), players: new Map() };
   const ids = new Map<string, string>();
   const ambiguous = new Set<string>();
   const yahooByGsis = new Map<string, string>();
   const sleeperIds = new Map<string, string>();
   const ambiguousSleeper = new Set<string>();
+  const players = new Map<string, NflverseRosterPlayer>();
+  const ambiguousPlayers = new Set<string>();
   for (const row of eligible.filter((item) => numberValue(item.week) === week)) {
     const gsisId = String(row.gsis_id);
+    const position = String(row.position || "") as NflverseRosterPlayer["position"];
+    const fullName = String(row.full_name || "").trim();
+    if (fullName && fantasyRosterPositions.has(position)) {
+      const player = { fullName, team: row.team || null, position, status: row.status || null };
+      const previous = players.get(gsisId);
+      if (previous && JSON.stringify(previous) !== JSON.stringify(player)) ambiguousPlayers.add(gsisId);
+      else players.set(gsisId, player);
+    }
     if (/^\d+$/.test(String(row.yahoo_id || ""))) {
       const yahooId = String(row.yahoo_id);
       const previous = ids.get(yahooId);
@@ -302,7 +333,8 @@ export function parseYahooCrosswalk(
   }
   for (const yahooId of ambiguous) ids.delete(yahooId);
   for (const sleeperId of ambiguousSleeper) sleeperIds.delete(sleeperId);
-  return { week, ids, sleeperIds };
+  for (const gsisId of ambiguousPlayers) players.delete(gsisId);
+  return { week, ids, sleeperIds, players };
 }
 
 export function parseDepthCharts(
@@ -361,7 +393,9 @@ export function parseInjuryReport(
   week: number
 ): Evidence[] {
   const now = new Date().toISOString();
-  return data.filter((row) => matchesSeasonWeek(row, season, week)).map((row, idx) => {
+  return data.filter((row) => matchesSeasonWeek(row, season, week) &&
+    (!row.position || fantasyRosterPositions.has(row.position as NflverseRosterPlayer["position"])))
+    .map((row, idx) => {
     const playerId = row.player_id || row.gsis_id || `nflv_player_${idx}`;
     const name = row.full_name || row.player_name || playerId;
     const team = row.team || row.club_code || "NFL";
@@ -422,7 +456,7 @@ export const nflverse: NflverseAdapter = {
       const raw = await readReleaseAsset(url);
       return parseYahooCrosswalk(raw as NflverseWeeklyRosterId[], season, week);
     } catch {
-      return { week: null, ids: new Map(), sleeperIds: new Map() };
+      return { week: null, ids: new Map(), sleeperIds: new Map(), players: new Map() };
     }
   },
 

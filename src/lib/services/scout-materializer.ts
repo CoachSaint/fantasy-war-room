@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { NflverseSnapshot } from "@/lib/data/nflverse";
+import type { NflverseRosterPlayer, NflverseSnapshot } from "@/lib/data/nflverse";
 import type { SleeperWeeklyProjection } from "@/lib/data/sleeper";
 import type { Evidence, Position } from "@/lib/types";
 
@@ -47,6 +47,48 @@ function fingerprint(snapshot: NflverseSnapshot): string {
     redZoneShare: snapshot.redZoneShare,
   };
   return createHash("sha256").update(JSON.stringify(sourceFields)).digest("hex");
+}
+
+/** Seed exact GSIS identities before any week-specific stats or projections arrive. */
+export async function materializeNflverseRosterPlayers(
+  client: SupabaseClient,
+  rosterPlayers: Map<string, NflverseRosterPlayer>,
+): Promise<number> {
+  const entries = [...rosterPlayers.entries()];
+  const mapped = new Set<string>();
+  for (const batch of chunks(entries.map(([gsisId]) => gsisId))) {
+    const result = await client.from("player_id_map")
+      .select("provider_player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (result.error) throw new ScoutMaterializationError("roster_mapping_read_failed");
+    for (const row of result.data || []) mapped.add(String(row.provider_player_id));
+  }
+  const missing = entries.filter(([gsisId]) => !mapped.has(gsisId));
+  for (const batch of chunks(missing)) {
+    const players = await client.from("players")
+      .upsert(batch.map(([gsisId, player]) => ({
+        canonical_key: `nflverse:${gsisId}`,
+        full_name: player.fullName,
+        team: player.team,
+        position: player.position,
+        status: player.status,
+        identity_status: "provider_only",
+      })), { onConflict: "canonical_key" })
+      .select("id, canonical_key");
+    if (players.error) throw new ScoutMaterializationError("roster_player_create_failed");
+    const idsByKey = new Map((players.data || []).map((row) => [String(row.canonical_key), String(row.id)]));
+    const rows = batch.map(([gsisId]) => ({
+      provider: "nflverse",
+      provider_player_id: gsisId,
+      player_id: idsByKey.get(`nflverse:${gsisId}`),
+    }));
+    if (rows.some((row) => !row.player_id)) throw new ScoutMaterializationError("roster_player_create_failed");
+    const mappings = await client.from("player_id_map")
+      .upsert(rows, { onConflict: "provider,provider_player_id", ignoreDuplicates: true });
+    if (mappings.error) throw new ScoutMaterializationError("roster_mapping_write_failed");
+  }
+  return entries.length;
 }
 
 /** Persist only source-observed values; no historical actual becomes a forecast. */
@@ -134,6 +176,17 @@ export async function materializeGlobalNflverse(
     snapshotsInserted += result.data?.length || 0;
   }
 
+  const evidenceIds = [...new Set(evidence.map((item) => item.playerId).filter((id) =>
+    /^00-\d+$/.test(id) && !mapped.has(id)
+  ))];
+  for (const batch of chunks(evidenceIds)) {
+    const result = await client.from("player_id_map")
+      .select("provider_player_id, player_id")
+      .eq("provider", "nflverse")
+      .in("provider_player_id", batch);
+    if (result.error) throw new ScoutMaterializationError("evidence_mapping_read_failed");
+    for (const row of result.data || []) mapped.set(String(row.provider_player_id), String(row.player_id));
+  }
   const resolvedEvidence = evidence.filter((item) => mapped.has(item.playerId));
   let evidenceInserted = 0;
   for (const batch of chunks(resolvedEvidence)) {
@@ -156,7 +209,7 @@ export async function materializeGlobalNflverse(
   }
 
   return {
-    playersMapped: mapped.size,
+    playersMapped: providerIds.length,
     snapshotsInserted,
     evidenceInserted,
     evidenceUnmapped: evidence.length - resolvedEvidence.length,

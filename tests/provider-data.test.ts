@@ -113,16 +113,20 @@ describe("nflverse release adapters", () => {
   it("joins Yahoo and GSIS IDs only from an unambiguous current roster week", () => {
     const crosswalk = parseYahooCrosswalk([
       { season: 2026, week: 2, game_type: "REG", yahoo_id: "10", gsis_id: "00-0000010" },
-      { season: 2026, week: 3, game_type: "REG", yahoo_id: "10", sleeper_id: "510", gsis_id: "00-0000010" },
+      { season: 2026, week: 3, game_type: "REG", yahoo_id: "10", sleeper_id: "510", gsis_id: "00-0000010", full_name: "Quarterback One", team: "KC", position: "QB", status: "ACT" },
       { season: 2026, week: 3, game_type: "REG", yahoo_id: "20", gsis_id: "00-0000020" },
       { season: 2026, week: 3, game_type: "REG", yahoo_id: "20", gsis_id: "00-0000099" },
       { season: 2026, week: 3, game_type: "REG", yahoo_id: "40", gsis_id: "00-0000040" },
       { season: 2026, week: 3, game_type: "REG", yahoo_id: "41", gsis_id: "00-0000040" },
+      { season: 2026, week: 3, game_type: "REG", gsis_id: "00-0000050", full_name: "Defender", position: "LB" },
+      { season: 2026, week: 3, game_type: "REG", gsis_id: "00-0000060", full_name: "Name One", position: "RB" },
+      { season: 2026, week: 3, game_type: "REG", gsis_id: "00-0000060", full_name: "Name Two", position: "RB" },
       { season: 2026, week: 4, game_type: "REG", yahoo_id: "30", gsis_id: "00-0000030" },
     ], 2026, 3);
     expect(crosswalk.week).toBe(3);
     expect([...crosswalk.ids]).toEqual([["10", "00-0000010"]]);
     expect([...crosswalk.sleeperIds]).toEqual([["510", "00-0000010"]]);
+    expect([...crosswalk.players]).toEqual([["00-0000010", { fullName: "Quarterback One", team: "KC", position: "QB", status: "ACT" }]]);
   });
 
   it("retains depth order and practice participation in evidence", () => {
@@ -139,6 +143,14 @@ describe("nflverse release adapters", () => {
     expect(depth[0].fingerprint).toContain("d1");
     expect(injury[0].summary).toContain("Practice participation: Limited");
     expect(injury[0].sourceUrl).toContain("releases/download/injuries/");
+  });
+
+  it("keeps injuries for supported fantasy positions only", () => {
+    const rows = parseInjuryReport([
+      { gsis_id: "00-0000001", position: "WR", season: 2026, week: 3 },
+      { gsis_id: "00-0000002", position: "LB", season: 2026, week: 3 },
+    ], 2026, 3);
+    expect(rows.map((row) => row.playerId)).toEqual(["00-0000001"]);
   });
 
   it("normalizes the official dated depth schema and keeps only its latest snapshot", () => {
