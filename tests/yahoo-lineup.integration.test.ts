@@ -8,6 +8,7 @@ import { refreshYahooDecisionsAfterImport } from "../src/lib/services/yahoo-deci
 import { runYahooSync } from "../src/lib/integrations/yahoo-runner";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
+import { POST as askCoach } from "../src/app/api/coach/chat/route";
 
 const live = process.env.FWR_LIVE_TEST === "1";
 const sourceUrl = "https://api.sleeper.app/v1/projections/nfl/regular/2026/3";
@@ -166,6 +167,17 @@ describe("Yahoo lineup hosted database integration", () => {
       expect(ownerRecs.status).toBe(200);
       expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 } }] });
       expect((await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+
+      const coachUrl = "http://localhost:3000/api/coach/chat";
+      const coachBody = JSON.stringify({ leagueId, messages: [{ role: "user", content: "Who should I start?" }] });
+      const coachRequest = (token?: string) => new Request(coachUrl, { method: "POST",
+        headers: { "content-type": "application/json", ...(token ? { authorization: `Bearer ${token}` } : {}) },
+        body: coachBody });
+      const ownerCoach = await askCoach(coachRequest(ownerToken));
+      expect(ownerCoach.status).toBe(200);
+      expect(await ownerCoach.json()).toMatchObject({ modelUsed: "structured-v1", source: "persisted-league-decisions", demo: false });
+      expect((await askCoach(coachRequest(outsiderToken))).status).toBe(403);
+      expect((await askCoach(coachRequest())).status).toBe(401);
 
       checked("expire availability scan", (await client.from("league_available_scans").update({
         fresh_until: new Date(asOf.getTime() + 2500).toISOString(),
