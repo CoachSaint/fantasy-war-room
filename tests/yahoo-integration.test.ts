@@ -234,11 +234,25 @@ describe("Yahoo provider normalization", () => {
     const client = { from: () => { databaseCalls++; throw new Error("database should not be reached"); } } as unknown as SupabaseClient;
     const partial = {
       currentWeek: 4,
-      teams: ["t.1", "t.2", "t.3", "t.4"].map((teamKey) => ({ teamKey })),
+      ownedTeamKey: "t.1",
+      teams: ["t.1", "t.2", "t.3", "t.4"].map((teamKey) => ({ teamKey, ownedByCurrentUser: teamKey === "t.1" })),
       matchups: [{ week: 4, teamKeys: ["t.1", "t.2"] }],
     } as YahooLeagueImport;
     await expect(persistYahooImports(client, "user", "connection", null, [partial]))
       .rejects.toMatchObject({ code: "yahoo_matchups_invalid" });
+    expect(databaseCalls).toBe(0);
+  });
+
+  it("rejects a claimed team that Yahoo did not mark as owned before database access", async () => {
+    let databaseCalls = 0;
+    const client = { from: () => { databaseCalls++; throw new Error("database should not be reached"); } } as unknown as SupabaseClient;
+    const fabricated = {
+      currentWeek: 4, ownedTeamKey: "449.l.123.t.1",
+      teams: ["449.l.123.t.1", "449.l.123.t.2"].map((teamKey) => ({ teamKey, ownedByCurrentUser: false })),
+      matchups: [{ week: 4, teamKeys: ["449.l.123.t.1", "449.l.123.t.2"] }],
+    } as YahooLeagueImport;
+    await expect(persistYahooImports(client, "user", "connection", null, [fabricated]))
+      .rejects.toMatchObject({ code: "yahoo_owned_team_invalid" });
     expect(databaseCalls).toBe(0);
   });
 });

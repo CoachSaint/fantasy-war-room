@@ -203,11 +203,30 @@ async function persistYahooLeague(
   const existingLeague = await client
     .from("leagues")
     .select("id, workspace_id")
-    .eq("owner_id", userId)
     .eq("provider", "yahoo")
     .eq("provider_league_id", imported.leagueKey)
     .maybeSingle();
   if (existingLeague.error) throw new YahooSyncError("yahoo_league_lookup_failed");
+
+  const priorRosters = existingLeague.data ? await client.from("rosters")
+    .select("provider_roster_id, owner_user_id")
+    .eq("league_id", existingLeague.data.id) : { data: [], error: null };
+  if (priorRosters.error) throw new YahooSyncError("yahoo_roster_ownership_unavailable");
+  const priorOwnerByTeam = new Map((priorRosters.data || [])
+    .map((row) => [String(row.provider_roster_id), row.owner_user_id ? String(row.owner_user_id) : null]));
+  const claimedOwner = priorOwnerByTeam.get(imported.ownedTeamKey);
+  if (claimedOwner && claimedOwner !== userId) throw new YahooSyncError("yahoo_roster_already_claimed");
+  if (existingLeague.data && externalUserId) {
+    const providerOwner = await client.from("league_memberships")
+      .select("user_id")
+      .eq("league_id", existingLeague.data.id)
+      .eq("provider_user_id", externalUserId)
+      .maybeSingle();
+    if (providerOwner.error) throw new YahooSyncError("yahoo_provider_identity_unavailable");
+    if (providerOwner.data && String(providerOwner.data.user_id) !== userId) {
+      throw new YahooSyncError("yahoo_provider_identity_already_claimed");
+    }
+  }
 
   let workspaceId: string;
   let leagueId: string;
@@ -221,7 +240,7 @@ async function persistYahooLeague(
       scoring: { provider: "yahoo", statModifiers: imported.scoringModifiers },
       roster_positions: imported.rosterSlots.flatMap((slot) => Array.from({ length: slot.count }, () => slot.slotType)),
       updated_at: now,
-    }).eq("id", leagueId).eq("owner_id", userId);
+    }).eq("id", leagueId);
     if (updated.error) throw new YahooSyncError("yahoo_league_update_failed");
   } else {
     const workspace = assertResult(await client.from("workspaces").insert({
@@ -247,6 +266,13 @@ async function persistYahooLeague(
     leagueId = String(league.id);
   }
 
+  // Yahoo authenticated the importing manager as the owner of one team in
+  // this league. Join that same workspace without downgrading an existing role.
+  const workspaceMembership = await client.from("workspace_members").upsert({
+    workspace_id: workspaceId, user_id: userId, role: existingLeague.data ? "member" : "owner",
+  }, { onConflict: "workspace_id,user_id", ignoreDuplicates: true });
+  if (workspaceMembership.error) throw new YahooSyncError("yahoo_workspace_membership_failed");
+
   const allPlayers = imported.teams.flatMap((team) => team.players);
   const playerIds = await resolveYahooPlayers(client, allPlayers, imported.season, imported.currentWeek);
 
@@ -265,10 +291,11 @@ async function persistYahooLeague(
   const rosterRows = imported.teams.map((team) => {
     const canonicalIds = team.players.map((player) => playerIds.get(player.playerKey)).filter((id): id is string => Boolean(id));
     const starters = team.players.filter((player) => designation(player.selectedPosition) === "starter").map((player) => playerIds.get(player.playerKey)).filter((id): id is string => Boolean(id));
+    const priorOwner = priorOwnerByTeam.get(team.teamKey);
     return {
       league_id: leagueId,
       provider_roster_id: team.teamKey,
-      owner_user_id: team.teamKey === imported.ownedTeamKey ? userId : null,
+      owner_user_id: team.teamKey === imported.ownedTeamKey ? userId : priorOwner === userId ? null : priorOwner || null,
       name: team.name,
       player_ids: canonicalIds,
       starter_ids: starters,
@@ -388,6 +415,10 @@ export async function persistYahooImports(
   for (const imported of imports) {
     const expected = new Set(imported.teams.map((team) => team.teamKey));
     const actual = imported.matchups.flatMap((matchup) => matchup.teamKeys);
+    if (!expected.has(imported.ownedTeamKey) ||
+        !imported.teams.find((team) => team.teamKey === imported.ownedTeamKey)?.ownedByCurrentUser) {
+      throw new YahooSyncError("yahoo_owned_team_invalid");
+    }
     if (expected.size !== imported.teams.length || actual.length !== expected.size ||
         new Set(actual).size !== expected.size || actual.some((key) => !expected.has(key)) ||
         imported.matchups.some((matchup) => matchup.week !== imported.currentWeek)) {
