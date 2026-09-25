@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
+import { getYahooAvailablePool, normalizeYahooAvailablePage, normalizeYahooLeagueImport, normalizeYahooMatchups, normalizeYahooOwnedTeams } from "../src/lib/data/yahoo";
 import type { YahooLeagueImport } from "../src/lib/data/yahoo";
 import { persistYahooImports } from "../src/lib/integrations/yahoo-sync";
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -90,6 +90,42 @@ describe("Yahoo OAuth queue", () => {
 });
 
 describe("Yahoo provider normalization", () => {
+  it("accepts league-available players without roster positions and rejects foreign game keys", () => {
+    const page = { fantasy_content: { league: [{ players: {
+      count: 2,
+      0: { player: [[{ player_key: "449.p.31" }, { player_id: "31" }, { name: { full: "Available Runner" } }, { display_position: "RB" }, { status: "Q" }]] },
+      1: { player: [[{ player_key: "449.p.32" }, { player_id: "32" }, { name: { full: "Available Receiver" } }, { display_position: "WR" }]] },
+    } }] } };
+    expect(normalizeYahooAvailablePage(page, "449.l.123")).toMatchObject([
+      { playerKey: "449.p.31", fullName: "Available Runner", position: "RB", status: "Q" },
+      { playerKey: "449.p.32", fullName: "Available Receiver", position: "WR" },
+    ]);
+    expect(() => normalizeYahooAvailablePage({ fantasy_content: { league: [] } }, "449.l.123"))
+      .toThrow("yahoo_available_payload_invalid");
+    const foreign = structuredClone(page);
+    foreign.fantasy_content.league[0].players[1].player[0][0].player_key = "450.p.32";
+    expect(() => normalizeYahooAvailablePage(foreign, "449.l.123"))
+      .toThrow("yahoo_available_payload_invalid");
+  });
+
+  it("pages Yahoo's league-available filter with a bounded candidate scan", async () => {
+    const response = (start: number, count: number) => ({ fantasy_content: { league: [{ players: {
+      count,
+      ...Object.fromEntries(Array.from({ length: count }, (_, index) => [index, {
+        player: [[{ player_key: `449.p.${start + index + 1}` }, { name: { full: `Candidate ${start + index + 1}` } }, { display_position: "RB" }]],
+      }])),
+    } }] } });
+    const fetcher = vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+      const url = new URL(String(input));
+      expect(url.pathname).toContain("/league/449.l.123/players;status=A;sort=OR");
+      const start = Number(/;start=(\d+)/.exec(url.pathname)?.[1]);
+      return Response.json(response(start, start === 0 ? 50 : 2));
+    });
+    const pool = await getYahooAvailablePool("test-token", "449.l.123");
+    expect(pool).toMatchObject({ leagueKey: "449.l.123", truncated: false });
+    expect(pool.players).toHaveLength(52);
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
   const ownedTeam = {
     team: [[
       { team_key: "449.l.123.t.4" },
@@ -193,6 +229,7 @@ describe("Yahoo provider normalization", () => {
 describe("Yahoo migration security contract", () => {
   const migration = readFileSync(new URL("../supabase/migrations/0003_yahoo_integration.sql", import.meta.url), "utf8");
   const matchupMigration = readFileSync(new URL("../supabase/migrations/0004_yahoo_weekly_matchups.sql", import.meta.url), "utf8");
+  const availabilityMigration = readFileSync(new URL("../supabase/migrations/0005_yahoo_available_pool.sql", import.meta.url), "utf8");
 
   it("stores ciphertext server-side and exposes no authenticated token policy", () => {
     expect(migration).toMatch(/access_token_ciphertext text not null/);
@@ -206,6 +243,14 @@ describe("Yahoo migration security contract", () => {
     expect(migration).toMatch(/create table if not exists public\.provider_identity_queue/);
     expect(migration).toMatch(/alter table public\.provider_identity_queue enable row level security/);
     expect(migration).not.toMatch(/create policy .*provider_identity_queue/);
+  });
+
+  it("scopes Yahoo acquisition candidates to league members and requires freshness", () => {
+    expect(availabilityMigration).toMatch(/alter table public\.league_available_players enable row level security/);
+    expect(availabilityMigration).toMatch(/alter table public\.league_available_scans enable row level security/);
+    expect(availabilityMigration).toMatch(/public\.can_access_league\(league_id\)/);
+    expect(availabilityMigration).toMatch(/fresh_until timestamptz not null/);
+    expect(availabilityMigration).not.toMatch(/for (insert|update|delete) using/);
   });
 
   it("keeps current-week matchups league-scoped and server-written", () => {

@@ -1,5 +1,5 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type { YahooLeagueImport, YahooPlayer } from "@/lib/data/yahoo";
+import type { YahooAvailablePool, YahooLeagueImport, YahooPlayer } from "@/lib/data/yahoo";
 import { nflverse } from "@/lib/data/nflverse";
 
 export class YahooSyncError extends Error {
@@ -148,6 +148,45 @@ export async function resolveYahooPlayers(
     mappingRows.forEach((row) => resolved.set(row.provider_player_id, String(row.player_id)));
   }
   return resolved;
+}
+
+/** Replace the bounded Yahoo-verified candidate pool only after a complete fetch. */
+export async function persistYahooAvailablePool(
+  client: SupabaseClient,
+  leagueId: string,
+  league: YahooLeagueImport,
+  pool: YahooAvailablePool,
+): Promise<number> {
+  if (pool.leagueKey !== league.leagueKey || pool.players.length > 200
+    || new Set(pool.players.map((player) => player.playerKey)).size !== pool.players.length) {
+    throw new YahooSyncError("yahoo_available_pool_invalid");
+  }
+  const observedAt = new Date(pool.observedAt);
+  if (!Number.isFinite(observedAt.getTime())) throw new YahooSyncError("yahoo_available_pool_invalid");
+  const ids = await resolveYahooPlayers(client, pool.players, league.season, league.currentWeek);
+  if (ids.size !== pool.players.length) throw new YahooSyncError("yahoo_available_identity_incomplete");
+  const freshUntil = new Date(observedAt.getTime() + 6 * 60 * 60_000).toISOString();
+  for (let offset = 0; offset < pool.players.length; offset += 100) {
+    const batch = pool.players.slice(offset, offset + 100);
+    const rows = batch.map((player) => ({
+      league_id: leagueId, player_id: ids.get(player.playerKey), provider_player_key: player.playerKey,
+      observed_at: pool.observedAt, fresh_until: freshUntil,
+    }));
+    if (rows.some((row) => !row.player_id)) throw new YahooSyncError("yahoo_available_identity_incomplete");
+    const written = await client.from("league_available_players")
+      .upsert(rows, { onConflict: "league_id,player_id" });
+    if (written.error) throw new YahooSyncError(written.error.code === "42P01" ? "yahoo_availability_migration_required" : "yahoo_available_pool_write_failed");
+  }
+  const cleanup = await client.from("league_available_players").delete()
+    .eq("league_id", leagueId).lt("observed_at", pool.observedAt);
+  if (cleanup.error) throw new YahooSyncError(cleanup.error.code === "42P01" ? "yahoo_availability_migration_required" : "yahoo_available_pool_cleanup_failed");
+  const scan = await client.from("league_available_scans").upsert({
+    league_id: leagueId, observed_at: pool.observedAt, fresh_until: freshUntil,
+    candidates_count: pool.players.length, truncated: pool.truncated,
+    source_url: `https://fantasysports.yahooapis.com/fantasy/v2/league/${pool.leagueKey}/players;status=A`,
+  }, { onConflict: "league_id" });
+  if (scan.error) throw new YahooSyncError(scan.error.code === "42P01" ? "yahoo_availability_migration_required" : "yahoo_available_scan_write_failed");
+  return pool.players.length;
 }
 
 async function persistYahooLeague(

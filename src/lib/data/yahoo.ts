@@ -3,6 +3,8 @@ import type { Position, RosterSlotType } from "@/lib/types";
 const YAHOO_FANTASY_BASE = "https://fantasysports.yahooapis.com/fantasy/v2";
 const MAX_LEAGUES = 10;
 const MAX_TEAMS_PER_LEAGUE = 32;
+const AVAILABLE_PAGE_SIZE = 50;
+const MAX_AVAILABLE_CANDIDATES = 200;
 
 type UnknownRecord = Record<string, unknown>;
 
@@ -57,6 +59,13 @@ export interface YahooMatchup {
   winnerTeamKey: string | null;
   isTied: boolean;
   isPlayoffs: boolean;
+}
+
+export interface YahooAvailablePool {
+  leagueKey: string;
+  players: YahooPlayer[];
+  observedAt: string;
+  truncated: boolean;
 }
 
 function isRecord(value: unknown): value is UnknownRecord {
@@ -151,14 +160,14 @@ function normalizeRosterSlot(positionValue: string | undefined, countValue: numb
   return definition ? { ...definition, count } : null;
 }
 
-function normalizePlayer(node: unknown): YahooPlayer | null {
+function normalizePlayer(node: unknown, requireSelectedPosition = true): YahooPlayer | null {
   const playerKey = text(node, "player_key");
   if (!playerKey || !/^\d+\.p\.\d+$/.test(playerKey)) return null;
   const nameNode = findNamedNodes(node, "name")[0];
   const selectedNode = findNamedNodes(node, "selected_position")[0];
   const position = normalizePosition(text(node, "display_position"));
   const selectedPosition = text(selectedNode, "position");
-  if (!position || !selectedPosition) return null;
+  if (!position || (requireSelectedPosition && !selectedPosition)) return null;
   return {
     playerKey,
     playerId: text(node, "player_id") || playerKey,
@@ -170,12 +179,30 @@ function normalizePlayer(node: unknown): YahooPlayer | null {
   };
 }
 
+/** Yahoo's league `status=A` filter identifies acquisition candidates. */
+export function normalizeYahooAvailablePage(payload: unknown, leagueKey: string): YahooPlayer[] {
+  const collections = findNamedNodes(payload, "players");
+  if (!collections.length) throw new Error("yahoo_available_payload_invalid");
+  const raw = findNamedNodes(collections[0], "player");
+  if (raw.length > AVAILABLE_PAGE_SIZE) throw new Error("yahoo_available_payload_invalid");
+  const prefix = `${leagueKey.split(".")[0]}.p.`;
+  const players = raw.map((node) => normalizePlayer(node, false));
+  if (players.some((player) => !player || !player.playerKey.startsWith(prefix))) {
+    throw new Error("yahoo_available_payload_invalid");
+  }
+  const found = players as YahooPlayer[];
+  if (new Set(found.map((player) => player.playerKey)).size !== found.length) {
+    throw new Error("yahoo_available_payload_invalid");
+  }
+  return found;
+}
+
 function normalizeTeam(node: unknown): YahooTeamRoster | null {
   const teamKey = text(node, "team_key");
   if (!teamKey || !/^\d+\.l\.\d+\.t\.\d+$/.test(teamKey)) return null;
   const managerNode = findNamedNodes(node, "manager")[0];
   const players = findNamedNodes(node, "player")
-    .map(normalizePlayer)
+    .map((player) => normalizePlayer(player))
     .filter((player): player is YahooPlayer => player !== null);
   return {
     teamKey,
@@ -267,7 +294,7 @@ export function normalizeYahooLeagueImport(
     const roster = rosterPayloads.get(team.teamKey);
     if (!roster || findNamedNodes(roster, "players").length === 0) throw new Error("yahoo_payload_invalid");
     const rawPlayers = findNamedNodes(roster, "player");
-    const players = rawPlayers.map(normalizePlayer).filter((player): player is YahooPlayer => player !== null);
+    const players = rawPlayers.map((player) => normalizePlayer(player)).filter((player): player is YahooPlayer => player !== null);
     if (players.length !== rawPlayers.length) throw new Error("yahoo_payload_unsupported");
     return { ...team, players };
   });
@@ -332,6 +359,28 @@ async function mapConcurrent<T, R>(items: T[], limit: number, mapper: (item: T) 
   }
   await Promise.all(Array.from({ length: Math.min(limit, items.length) }, () => worker()));
   return results;
+}
+
+/** Bounded top-candidate scan. Every returned player came from Yahoo's league available filter. */
+export async function getYahooAvailablePool(accessToken: string, leagueKey: string): Promise<YahooAvailablePool> {
+  if (!/^\d+\.l\.\d+$/.test(leagueKey)) throw new Error("yahoo_league_key_invalid");
+  const players: YahooPlayer[] = [];
+  const seen = new Set<string>();
+  for (let start = 0; start < MAX_AVAILABLE_CANDIDATES; start += AVAILABLE_PAGE_SIZE) {
+    const payload = await yahooFetch(accessToken,
+      `/league/${encodeURIComponent(leagueKey)}/players;status=A;sort=OR;start=${start};count=${AVAILABLE_PAGE_SIZE}`);
+    const page = normalizeYahooAvailablePage(payload, leagueKey);
+    if (start === 0 && page.length === 0) throw new Error("yahoo_available_pool_empty");
+    for (const player of page) {
+      if (seen.has(player.playerKey)) throw new Error("yahoo_available_pagination_invalid");
+      seen.add(player.playerKey);
+      players.push(player);
+    }
+    if (page.length < AVAILABLE_PAGE_SIZE) {
+      return { leagueKey, players, observedAt: new Date().toISOString(), truncated: false };
+    }
+  }
+  return { leagueKey, players, observedAt: new Date().toISOString(), truncated: true };
 }
 
 export async function getYahooLeagueImports(accessToken: string): Promise<YahooLeagueImport[]> {

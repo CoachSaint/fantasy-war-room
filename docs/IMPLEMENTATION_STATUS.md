@@ -16,6 +16,7 @@ Updated: 2026-09-24
 - The nflverse 2026 player-stats release currently contains regular-season weeks 1 and 2 while Sleeper reports week 3. Historical actuals are stored with their source week and never labeled as projections. Week 3 injury evidence is fetched separately. The large depth-chart asset is skipped under the bounded fetch limit.
 - The candidate separately ingests current-week Sleeper projection fields for exact GSIS-matched players and keeps standard, half-PPR, and PPR values distinct. A disposable live Week 3 projection was persisted and repeated without duplicates, then removed. The public projection endpoint is observed but absent from Sleeper's published API reference; provider availability and non-commercial licensing remain release considerations. No projection accuracy claim has been established.
 - Scout remains degraded: Yahoo consent/league sync, full snapshot diff, and draft/waiver decisions are incomplete. The local candidate computes narrow same-position Yahoo lineup swaps from current Sleeper stat forecasts and imported Yahoo scoring modifiers. A disposable hosted-database control fixture proved one owner-scoped recommendation, replacement on rerun, a recommendation-change brief, and owner/outsider/anonymous read boundaries; it was cleaned up. The brief tracks materialized decision changes only. These checks do not establish forecast accuracy or a real Yahoo import. No real user league or recommendation has been imported or created.
+- A new candidate migration `0005_yahoo_available_pool.sql` defines member-scoped, expiring Yahoo league-available candidates. It has **not** been applied to the hosted project. The candidate Yahoo sync fetches at most 200 players per league from the official `status=A` collection; the response reports a truncated scan when the cap is reached. This is candidate code without real Yahoo consent or a live availability check.
 
 ## Repository-complete work
 
@@ -35,7 +36,7 @@ Updated: 2026-09-24
 | Gate | Current boundary | Owner evidence required |
 | --- | --- | --- |
 | Supabase | Dedicated Free project `fswsefqqlltmaktiqwge` is healthy and the current Vercel production alias reports connected Supabase in demo mode; the candidate branch has not been deployed | Exact candidate SHA/deployment binding, Mason login, and live access checks |
-| Schema | `0001` through `0004` are applied on the dedicated project; a disposable owner/outsider/anonymous matchup RLS probe passed and was cleaned up | Recheck exact applied/pending history before promotion and prove full user/membership isolation |
+| Schema | `0001` through `0004` are applied on the dedicated project; candidate `0005` is pending and needs review plus a migration/rollback anchor | Apply only reviewed pending migration, then prove availability RLS and full user/membership isolation |
 | League identity | Setup contract and persistence route exist | Authenticated real league setup, membership/roster mapping, persisted result |
 | Setup atomicity | Every write and compensating cleanup result is checked | Transactional RPC or equivalent plus injected-failure proof before self-service production use |
 | Sleeper | Public adapter exists; no account/league is configured here | Real league selection, current NFL state, roster/player ID verification |

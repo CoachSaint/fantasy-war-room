@@ -11,7 +11,7 @@ Yahoo granted Fantasy Sports as a permission on the developer account on Septemb
    `https://fantasy-war-room-pi.vercel.app/api/integrations/yahoo/callback`
    Confirm this is still the actual production domain before saving the Yahoo app. A preview domain or localhost requires its own registered callback and matching `YAHOO_REDIRECT_URI` in that environment.
 3. Create the Yahoo app, then submit its **Client ID (Consumer Key)** at [Yahoo Fantasy application confirmation](https://sports.yahoo.com/developer/application-confirmation/). Do not submit the Client Secret. Record Yahoo's confirmation result before enabling live imports.
-4. Identify the Supabase project actually bound to this deployment, and inspect its applied migrations before changing it. Apply only pending migrations in order: `0001_initial.sql`, `0002_workspace_learning.sql`, `0003_yahoo_integration.sql`, then `0004_yahoo_weekly_matchups.sql`. Do not point this app at another product's database.
+4. Identify the Supabase project actually bound to this deployment, and inspect its applied migrations before changing it. Apply only pending migrations in order: `0001_initial.sql`, `0002_workspace_learning.sql`, `0003_yahoo_integration.sql`, `0004_yahoo_weekly_matchups.sql`, then `0005_yahoo_available_pool.sql`. Do not point this app at another product's database.
 5. Add these server-only values to the intended Vercel environment:
    - `YAHOO_CLIENT_ID`
    - `YAHOO_CLIENT_SECRET`

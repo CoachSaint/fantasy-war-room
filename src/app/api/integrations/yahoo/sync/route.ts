@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { getYahooLeagueImports } from "@/lib/data/yahoo";
+import { getYahooAvailablePool, getYahooLeagueImports } from "@/lib/data/yahoo";
 import { getAuthenticatedRequest, hasAdminCredentials } from "@/lib/supabase/admin";
 import {
   decryptYahooToken,
@@ -7,7 +7,7 @@ import {
   refreshYahooAccessToken,
   yahooIntegrationConfigured,
 } from "@/lib/integrations/yahoo-oauth";
-import { persistYahooImports, YahooSyncError } from "@/lib/integrations/yahoo-sync";
+import { persistYahooAvailablePool, persistYahooImports, YahooSyncError } from "@/lib/integrations/yahoo-sync";
 import { clientKey, consumeRateLimit, errorResponse, rateLimitResponse } from "@/lib/security/http";
 
 export const dynamic = "force-dynamic";
@@ -98,24 +98,45 @@ export async function POST(request: Request) {
         connection.external_user_id ? String(connection.external_user_id) : null,
         imports
       );
+      let availablePlayersProcessed = 0;
+      let truncatedAvailabilityScans = 0;
+      let availabilityError: string | null = null;
+      for (const [index, imported] of imports.entries()) {
+        try {
+          const pool = await getYahooAvailablePool(accessToken, imported.leagueKey);
+          availablePlayersProcessed += await persistYahooAvailablePool(
+            auth.adminClient, summary.leagueIds[index], imported, pool
+          );
+          if (pool.truncated) truncatedAvailabilityScans += 1;
+        } catch (error) {
+          availabilityError ??= error instanceof YahooSyncError ? error.code
+            : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_available_sync_failed";
+        }
+      }
       const finishedAt = new Date().toISOString();
       const connectionUpdate = await auth.adminClient.from("provider_connections").update({
         status: "connected",
-        error_code: null,
+        error_code: availabilityError,
         last_synced_at: finishedAt,
         updated_at: finishedAt,
       }).eq("id", connection.id).eq("user_id", auth.user.id).eq("sync_version", connection.sync_version).select("id").maybeSingle();
       if (connectionUpdate.error || !connectionUpdate.data) return errorResponse("yahoo_sync_lock_lost", 409);
       const runUpdate = await auth.adminClient.from("provider_sync_runs").update({
-          status: "completed",
+          status: availabilityError ? "completed_with_errors" : "completed",
           leagues_processed: summary.leaguesProcessed,
           rosters_processed: summary.rostersProcessed,
           players_processed: summary.playersProcessed,
           matchups_processed: summary.matchupsProcessed,
+          available_players_processed: availablePlayersProcessed,
+          error_code: availabilityError,
           finished_at: finishedAt,
         }).eq("id", runId).eq("user_id", auth.user.id);
       if (runUpdate.error) return errorResponse("yahoo_sync_persistence_failed", 503);
-      return NextResponse.json({ ok: true, status: "completed", data: summary });
+      return NextResponse.json({
+        ok: !availabilityError, status: availabilityError ? "degraded" : "completed",
+        ...(availabilityError ? { error: availabilityError } : {}),
+        data: { ...summary, availablePlayersProcessed, truncatedAvailabilityScans },
+      }, { status: availabilityError ? 503 : 200 });
     } catch (error) {
       const code = error instanceof YahooSyncError ? error.code : error instanceof Error && error.message.startsWith("yahoo_") ? error.message : "yahoo_sync_failed";
       const finishedAt = new Date().toISOString();
