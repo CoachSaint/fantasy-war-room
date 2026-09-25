@@ -11,6 +11,16 @@ import type { Evidence, Recommendation } from "@/lib/types";
 import type { BriefChange } from "@/lib/engine/daily-brief";
 import { Clock, RefreshCw, Flame } from "lucide-react";
 
+type TodaySignals = {
+  rosterObservedAt: string;
+  injuries: Array<{ playerId: string; playerName: string; position: string; status: string;
+    previousStatus: string | null; summary: string; observedAt: string;
+    sourceUrl: string | null; evidenceId: string; changed: boolean }>;
+  risers: Array<{ playerId: string; playerName: string; position: string; latestWeek: number;
+    priorWeek: number; latestPoints: number; priorPoints: number; change: number; observedAt: string }>;
+  fallers: TodaySignals["risers"];
+};
+
 export default function TodayPage() {
   const league = useConnectedLeague();
   if (league.status === "loading") return <LeagueGate state={league} />;
@@ -32,11 +42,36 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
     | { status: "ready"; stale: boolean; computedAt: string; baselineAt: string | null; changes: BriefChange[] }
   >({ status: "loading" });
   const [clock, setClock] = useState<number | null>(null);
+  const [signals, setSignals] = useState<
+    | { status: "loading" | "unavailable" | "roster_stale" }
+    | { status: "ready"; data: TodaySignals }
+  >({ status: "loading" });
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(Date.now()), 60_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void (async () => {
+      try {
+        const response = await fetch(`/api/today/signals?leagueId=${encodeURIComponent(leagueId)}`, {
+          credentials: "same-origin", signal: controller.signal,
+        });
+        const payload = await response.json() as TodaySignals & { error?: string };
+        if (!response.ok) return setSignals({ status: payload.error === "yahoo_roster_sync_stale" ? "roster_stale" : "unavailable" });
+        if (!Array.isArray(payload.injuries) || !Array.isArray(payload.risers) || !Array.isArray(payload.fallers)) {
+          return setSignals({ status: "unavailable" });
+        }
+        setSignals({ status: "ready", data: payload });
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") return;
+        setSignals({ status: "unavailable" });
+      }
+    })();
+    return () => controller.abort();
+  }, [leagueId]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -86,6 +121,36 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
   return (
     <>
       <PageHeader eyebrow="Connected league · preview" title={leagueName} description="Only persisted recommendations for your authenticated league appear here." />
+      <section className="card" style={{ marginBottom: 20 }}>
+        <h2 style={{ marginTop: 0 }}>Roster signals</h2>
+        {signals.status === "loading" && <p role="status">Checking injury reports and recent games…</p>}
+        {signals.status === "unavailable" && <p role="alert">Roster signals could not be verified. No injury or performance changes were inferred.</p>}
+        {signals.status === "roster_stale" && <p role="alert">Your Yahoo roster import is older than six hours. Refresh it to see current roster signals.</p>}
+        {signals.status === "ready" && <>
+          <p className="muted" style={{ fontSize: 12 }}>Owned roster checked {new Date(signals.data.rosterObservedAt).toLocaleString()}. Injury reports were observed from nflverse; game movements compare published PPR results, not forecasts or changes since yesterday.</p>
+          <div className="grid grid-2" style={{ gap: 16 }}>
+            <div>
+              <h3 style={{ marginTop: 0 }}>Injury reports</h3>
+              {signals.data.injuries.length === 0 && <p className="muted">No recent current-week injury report was saved for your roster. This does not verify every player is healthy.</p>}
+              {signals.data.injuries.map((item) => <article key={item.evidenceId} style={{ borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 10 }}>
+                <strong>{item.playerName} · {item.position} · {item.status}</strong>
+                {item.changed && item.previousStatus && <div>Changed from {item.previousStatus}</div>}
+                <p className="muted" style={{ fontSize: 12, margin: "4px 0" }}>{item.summary}</p>
+                <span className="muted" style={{ fontSize: 12 }}>Checked {new Date(item.observedAt).toLocaleString()}</span>
+                {item.sourceUrl && <a href={item.sourceUrl} target="_blank" rel="noopener noreferrer" style={{ display: "block", fontSize: 12 }}>Injury source</a>}
+              </article>)}
+            </div>
+            <div>
+              <h3 style={{ marginTop: 0 }}>Recent game movement</h3>
+              {signals.data.risers.length === 0 && signals.data.fallers.length === 0 && <p className="muted">Two recent published games are needed before a movement can be shown.</p>}
+              {[...signals.data.risers, ...signals.data.fallers].map((item) => <article key={item.playerId} style={{ borderTop: "1px solid var(--line)", paddingTop: 10, marginTop: 10 }}>
+                <strong>{item.playerName} · {item.position} · {item.change > 0 ? "+" : ""}{item.change.toFixed(1)} PPR</strong>
+                <div className="muted" style={{ fontSize: 12 }}>Week {item.priorWeek}: {item.priorPoints.toFixed(1)} → Week {item.latestWeek}: {item.latestPoints.toFixed(1)}</div>
+              </article>)}
+            </div>
+          </div>
+        </>}
+      </section>
       {state.status === "loading" && <p role="status">Loading current decisions…</p>}
       {state.status === "unavailable" && <p role="alert">Recommendations are unavailable. No demo decisions were substituted.</p>}
       {state.status === "ready" && (
@@ -122,7 +187,7 @@ function ConnectedToday({ leagueId, leagueName }: { leagueId: string; leagueName
                     ))}
                   </div>
                 )}
-                <p className="muted" style={{ marginBottom: 0 }}>This brief tracks materialized recommendation changes. Injury and waiver deltas are not yet included.</p>
+                <p className="muted" style={{ marginBottom: 0 }}>This brief tracks saved recommendation changes. Roster injury reports and past game movement appear separately above; they are not part of this brief&apos;s daily comparison.</p>
               </>
             )}
           </section>
