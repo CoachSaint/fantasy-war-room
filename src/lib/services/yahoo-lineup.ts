@@ -71,8 +71,17 @@ export async function materializeYahooLineupForLeague(
   const members = (membership.data || []).filter((row) => row.roster_id);
   if (!members.length) return skipped("owned_roster_unavailable");
   const rosterIds = members.map((row) => String(row.roster_id));
+  const rosterState = await client.from("rosters").select("id, updated_at")
+    .eq("league_id", leagueId).in("id", rosterIds);
+  if (rosterState.error) throw new YahooLineupError("owned_roster_state_unavailable");
+  if ((rosterState.data || []).length !== rosterIds.length) return skipped("owned_roster_state_unavailable");
+  if ((rosterState.data || []).some((row) => {
+    const age = asOf.getTime() - new Date(String(row.updated_at)).getTime();
+    return !Number.isFinite(age) || age < -5 * 60_000 || age > 6 * 60 * 60_000;
+  })) return skipped("yahoo_roster_sync_stale");
+  const rosterSyncedAt = new Map((rosterState.data || []).map((row) => [String(row.id), new Date(String(row.updated_at)).getTime()]));
   const assignments = await client.from("roster_assignments")
-    .select("roster_id, player_id, designation")
+    .select("roster_id, player_id, designation, provider_status")
     .eq("league_id", leagueId).in("roster_id", rosterIds).limit(1001);
   if (assignments.error) throw new YahooLineupError("roster_assignments_unavailable");
   if ((assignments.data || []).length > 1000) throw new YahooLineupError("roster_assignments_too_large");
@@ -86,10 +95,10 @@ export async function materializeYahooLineupForLeague(
     const batch = ids.slice(offset, offset + 100);
     const [playerRows, snapshotRows, evidenceRows] = await Promise.all([
       client.from("players").select("id, full_name, position, status").in("id", batch),
-      client.from("player_snapshots").select("player_id, data, observed_at")
+      client.from("player_snapshots").select("player_id, data, observed_at, fingerprint")
         .eq("season", season).eq("week", week).eq("source", "sleeper_weekly_projections")
         .in("player_id", batch).order("observed_at", { ascending: false }).limit(1000),
-      client.from("evidence").select("id, player_id, observed_at")
+      client.from("evidence").select("id, player_id, observed_at, fingerprint")
         .eq("source", "sleeper_weekly_projections")
         .eq("source_url", `https://api.sleeper.app/v1/projections/nfl/regular/${season}/${week}`)
         .in("player_id", batch).order("observed_at", { ascending: false }).limit(1000),
@@ -100,23 +109,21 @@ export async function materializeYahooLineupForLeague(
     evidence.push(...(evidenceRows.data || []));
   }
   const playerById = new Map(players.map((row) => [String(row.id), row]));
-  const projectionById = new Map<string, SleeperWeeklyProjection>();
+  const evidenceByFingerprint = new Map(evidence.map((row) => [String(row.fingerprint), { id: String(row.id), playerId: String(row.player_id) }]));
+  const projectionById = new Map<string, { projection: SleeperWeeklyProjection; evidenceId: string }>();
   for (const row of snapshots) {
     const id = String(row.player_id);
     if (projectionById.has(id)) continue;
     const projection = projectionFromRow(row, season, week);
-    if (projection) projectionById.set(id, projection);
-  }
-  const evidenceById = new Map<string, string>();
-  for (const row of evidence) {
-    const id = String(row.player_id);
-    if (!evidenceById.has(id)) evidenceById.set(id, String(row.id));
+    const evidenceMatch = evidenceByFingerprint.get(`sleeper_projection_${String(row.fingerprint)}`);
+    if (projection && evidenceMatch?.playerId === id) projectionById.set(id, { projection, evidenceId: evidenceMatch.id });
   }
   const maxAgeMs = 24 * 60 * 60 * 1000;
-  const scored = new Map<string, { points: number; assumedZeroStatIds: string[] }>();
-  for (const [id, projection] of projectionById) {
+  const scored = new Map<string, { points: number; assumedZeroStatIds: string[]; observedAt: string; evidenceId: string }>();
+  for (const [id, pair] of projectionById) {
+    const { projection, evidenceId } = pair;
     const age = asOf.getTime() - new Date(projection.observedAt).getTime();
-    if (!Number.isFinite(age) || age < -5 * 60_000 || age > maxAgeMs || !evidenceById.has(id)) continue;
+    if (!Number.isFinite(age) || age < -5 * 60_000 || age > maxAgeMs) continue;
     const score = scoreYahooOffenseProjection(projection, scoring.statModifiers);
     if (!score.ok) {
       if (score.code === "unsupported_scoring_rules") {
@@ -124,11 +131,12 @@ export async function materializeYahooLineupForLeague(
       }
       continue;
     }
-    scored.set(id, { points: score.points, assumedZeroStatIds: score.assumedZeroStatIds });
+    scored.set(id, { points: score.points, assumedZeroStatIds: score.assumedZeroStatIds, observedAt: projection.observedAt, evidenceId });
   }
   const candidateRows = [];
   for (const member of members) {
     const rosterId = String(member.roster_id);
+    const rosterFreshUntil = rosterSyncedAt.get(rosterId)! + 6 * 60 * 60_000;
     const rosterAssignments = (assignments.data || []).filter((row) => String(row.roster_id) === rosterId);
     const starters = rosterAssignments.filter((row) => row.designation === "starter");
     const bench = rosterAssignments.filter((row) => row.designation === "bench");
@@ -142,7 +150,8 @@ export async function materializeYahooLineupForLeague(
         const id = String(row.player_id);
         const player = playerById.get(id);
         const score = scored.get(id);
-        if (!player || !score || player.position !== current.position || usedBench.has(id) || blockedStatus.test(String(player.status || ""))) return [];
+        if (!player || !score || player.position !== current.position || usedBench.has(id)
+          || blockedStatus.test(String(row.provider_status || player.status || ""))) return [];
         return [{ id, player, score, edge: score.points - currentScore.points }];
       }).filter((item) => item.edge >= 2).sort((a, b) => b.edge - a.edge);
       const best = alternatives[0];
@@ -157,10 +166,14 @@ export async function materializeYahooLineupForLeague(
         confidence: Math.max(35, 65 - assumed.length * 5),
         headline: `Start ${best.player.full_name} over ${current.full_name} (forecast edge ${edge} points)`,
         reason_codes: ["SAME_POSITION_SWAP", "LEAGUE_SCORING_PROJECTION", ...(assumed.length ? ["MISSING_STAT_PROJECTION_ASSUMED_ZERO"] : [])],
-        evidence_ids: [evidenceById.get(best.id)!, evidenceById.get(starterId)!],
+        evidence_ids: [best.score.evidenceId, currentScore.evidenceId],
         engine_version: engineVersion,
         computed_at: asOf.toISOString(),
-        fresh_until: new Date(asOf.getTime() + maxAgeMs).toISOString(),
+        fresh_until: new Date(Math.min(
+          rosterFreshUntil,
+          new Date(currentScore.observedAt).getTime() + maxAgeMs,
+          new Date(best.score.observedAt).getTime() + maxAgeMs,
+        )).toISOString(),
         payload: {
           projectionSource: "sleeper_weekly_projections",
           scoringSource: "yahoo_stat_modifiers",

@@ -3,6 +3,7 @@ import { createClient } from "@supabase/supabase-js";
 import { describe, expect, it } from "vitest";
 import { materializeYahooLineupForLeague } from "../src/lib/services/yahoo-lineup";
 import { materializeDailyBriefForLeague } from "../src/lib/services/daily-brief";
+import { materializeYahooWaiversForLeague } from "../src/lib/services/yahoo-waivers";
 import { GET as getBrief } from "../src/app/api/brief/route";
 import { GET as getRecommendations } from "../src/app/api/recommendations/route";
 
@@ -29,8 +30,11 @@ describe("Yahoo lineup hosted database integration", () => {
     const rosterId = randomUUID();
     const starterId = randomUUID();
     const benchId = randomUUID();
+    const availableId = randomUUID();
+    const scanId = randomUUID();
     const starterEvidenceId = randomUUID();
     const benchEvidenceId = randomUUID();
+    const availableEvidenceId = randomUUID();
     const asOf = new Date();
     let userId: string | null = null;
     let outsiderId: string | null = null;
@@ -67,34 +71,52 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("insert players", (await client.from("players").insert([
         { id: starterId, canonical_key: `fixture:${runId}:starter`, full_name: "Fixture Starter", position: "RB", status: "Active" },
         { id: benchId, canonical_key: `fixture:${runId}:bench`, full_name: "Fixture Bench", position: "RB", status: "Active" },
+        { id: availableId, canonical_key: `fixture:${runId}:available`, full_name: "Fixture Available", position: "RB", status: "Active" },
       ])).error);
       checked("insert assignments", (await client.from("roster_assignments").insert([
-        { league_id: leagueId, roster_id: rosterId, player_id: starterId, designation: "starter" },
-        { league_id: leagueId, roster_id: rosterId, player_id: benchId, designation: "bench" },
+        { league_id: leagueId, roster_id: rosterId, player_id: starterId, designation: "starter", provider_status: "Active" },
+        { league_id: leagueId, roster_id: rosterId, player_id: benchId, designation: "bench", provider_status: "Active" },
       ])).error);
 
       checked("insert projection snapshots", (await client.from("player_snapshots").insert([
         { player_id: starterId, season: 2026, week: 3, source: "sleeper_weekly_projections", fingerprint: `${runId}-starter`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-starter", projectedStats: { rush_yd: 50, rush_td: 0 } } },
         { player_id: benchId, season: 2026, week: 3, source: "sleeper_weekly_projections", fingerprint: `${runId}-bench`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-bench", projectedStats: { rush_yd: 100, rush_td: 0 } } },
+        { player_id: availableId, season: 2026, week: 3, source: "sleeper_weekly_projections", fingerprint: `${runId}-available`, observed_at: asOf.toISOString(), data: { providerPlayerId: "fixture-available", projectedStats: { rush_yd: 150, rush_td: 0 } } },
       ])).error);
       checked("insert source evidence", (await client.from("evidence").insert([
-        { id: starterEvidenceId, player_id: starterId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `${runId}-starter-evidence` },
-        { id: benchEvidenceId, player_id: benchId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `${runId}-bench-evidence` },
+        { id: starterEvidenceId, player_id: starterId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-starter` },
+        { id: benchEvidenceId, player_id: benchId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-bench` },
+        { id: availableEvidenceId, player_id: availableId, type: "projection", source: "sleeper_weekly_projections", source_url: sourceUrl, summary: "Disposable control fixture", confidence: 100, observed_at: asOf.toISOString(), fingerprint: `sleeper_projection_${runId}-available` },
       ])).error);
+      checked("insert availability scan", (await client.from("league_available_scans").insert({
+        league_id: leagueId, scan_id: scanId, observed_at: asOf.toISOString(),
+        fresh_until: new Date(asOf.getTime() + 6 * 60 * 60_000).toISOString(),
+        candidates_count: 1, truncated: false,
+        source_url: "https://fantasysports.yahooapis.com/fantasy/v2/league/449.l.123/players;status=A",
+      })).error);
+      checked("insert available player", (await client.from("league_available_players").insert({
+        league_id: leagueId, scan_id: scanId, player_id: availableId, provider_player_key: "449.p.33",
+        provider_status: "Active", observed_at: asOf.toISOString(),
+        fresh_until: new Date(asOf.getTime() + 6 * 60 * 60_000).toISOString(),
+      })).error);
 
       const baseline = await materializeDailyBriefForLeague(client, leagueId, new Date(asOf.getTime() + 500));
       expect(baseline).toMatchObject({ briefsWritten: 1, changesFound: 0, baselinesFound: 0 });
       const first = await materializeYahooLineupForLeague(client, leagueId, new Date(asOf.getTime() + 1000));
       expect(first).toMatchObject({ status: "complete", playersScored: 2, recommendationsInserted: 1 });
+      const firstWaivers = await materializeYahooWaiversForLeague(client, leagueId, new Date(asOf.getTime() + 1000));
+      expect(firstWaivers).toMatchObject({ status: "complete", candidatesScored: 1, recommendationsInserted: 1 });
       const firstBrief = await materializeDailyBriefForLeague(client, leagueId, new Date(asOf.getTime() + 1500));
-      expect(firstBrief).toMatchObject({ briefsWritten: 1, changesFound: 1, baselinesFound: 1 });
+      expect(firstBrief).toMatchObject({ briefsWritten: 1, changesFound: 2, baselinesFound: 1 });
       const second = await materializeYahooLineupForLeague(client, leagueId, new Date(asOf.getTime() + 2000));
       expect(second).toMatchObject({ status: "complete", playersScored: 2, recommendationsInserted: 1 });
+      const secondWaivers = await materializeYahooWaiversForLeague(client, leagueId, new Date(asOf.getTime() + 2000));
+      expect(secondWaivers).toMatchObject({ status: "complete", candidatesScored: 1, recommendationsInserted: 1 });
       const secondBrief = await materializeDailyBriefForLeague(client, leagueId, new Date(asOf.getTime() + 2500));
       expect(secondBrief).toMatchObject({ briefsWritten: 1, changesFound: 0, baselinesFound: 1 });
       const rows = await client.from("recommendations")
         .select("user_id, roster_id, subject_player_id, alternative_player_id, evidence_ids, payload")
-        .eq("league_id", leagueId);
+        .eq("league_id", leagueId).eq("kind", "start");
       checked("read recommendations", rows.error);
       expect(rows.data).toHaveLength(1);
       expect(rows.data?.[0]).toMatchObject({
@@ -102,6 +124,13 @@ describe("Yahoo lineup hosted database integration", () => {
         payload: { projectedPoints: { recommended: 10, current: 5 } },
       });
       expect(rows.data?.[0]?.evidence_ids).toEqual([benchEvidenceId, starterEvidenceId]);
+      const waiverRows = await client.from("recommendations")
+        .select("subject_player_id, alternative_player_id, evidence_ids, payload")
+        .eq("league_id", leagueId).eq("kind", "add");
+      checked("read waiver recommendations", waiverRows.error);
+      expect(waiverRows.data).toHaveLength(1);
+      expect(waiverRows.data?.[0]).toMatchObject({ subject_player_id: availableId, alternative_player_id: benchId,
+        evidence_ids: [availableEvidenceId, benchEvidenceId], payload: { availabilityTruncated: false } });
       const briefs = await client.from("daily_briefs").select("payload").eq("league_id", leagueId)
         .order("computed_at", { ascending: false }).limit(1);
       checked("read daily brief", briefs.error);
@@ -116,27 +145,47 @@ describe("Yahoo lineup hosted database integration", () => {
       checked("outsider sign-in", outsiderLogin.error);
       const outsiderToken = outsiderLogin.data.session?.access_token;
       if (!outsiderToken) throw new Error("outsider_token_missing");
+      for (const table of ["league_available_players", "league_available_scans"]) {
+        const endpoint = `${url}/rest/v1/${table}?select=*&league_id=eq.${leagueId}`;
+        const ownerRead = await fetch(endpoint, { headers: { apikey: anonKey, authorization: `Bearer ${ownerToken}` } });
+        expect(ownerRead.status).toBe(200);
+        expect(await ownerRead.json()).toHaveLength(1);
+        const outsiderRead = await fetch(endpoint, { headers: { apikey: anonKey, authorization: `Bearer ${outsiderToken}` } });
+        expect(outsiderRead.status).toBe(200);
+        expect(await outsiderRead.json()).toHaveLength(0);
+      }
       const briefUrl = `http://localhost:3000/api/brief?leagueId=${leagueId}`;
       const ownerBrief = await getBrief(new Request(briefUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerBrief.status).toBe(200);
       expect(await ownerBrief.json()).toMatchObject({ status: "ready", data: { leagueId } });
       expect((await getBrief(new Request(briefUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
       expect((await getBrief(new Request(briefUrl))).status).toBe(401);
-      const recUrl = `http://localhost:3000/api/recommendations?leagueId=${leagueId}`;
+      const recUrl = `http://localhost:3000/api/recommendations?leagueId=${leagueId}&kind=start`;
       const ownerRecs = await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${ownerToken}` } }));
       expect(ownerRecs.status).toBe(200);
       expect(await ownerRecs.json()).toMatchObject({ data: [{ confidenceMeaning: "heuristic_source_coverage_not_outcome_probability", projectedPoints: { recommended: 10, current: 5 } }] });
       expect((await getRecommendations(new Request(recUrl, { headers: { authorization: `Bearer ${outsiderToken}` } }))).status).toBe(403);
+
+      checked("expire availability scan", (await client.from("league_available_scans").update({
+        fresh_until: new Date(asOf.getTime() + 2500).toISOString(),
+      }).eq("league_id", leagueId)).error);
+      const staleWaivers = await materializeYahooWaiversForLeague(client, leagueId, new Date(asOf.getTime() + 3000));
+      expect(staleWaivers).toMatchObject({ status: "skipped", reason: "yahoo_availability_scan_stale", recommendationsInserted: 0 });
+      const expiredWaivers = await client.from("recommendations").select("fresh_until").eq("league_id", leagueId).eq("kind", "add");
+      checked("read expired waiver", expiredWaivers.error);
+      expect(new Date(String(expiredWaivers.data?.[0]?.fresh_until)).getTime()).toBeLessThanOrEqual(asOf.getTime() + 3000);
     } finally {
       checked("cleanup briefs", (await client.from("daily_briefs").delete().eq("league_id", leagueId)).error);
       checked("cleanup recommendations", (await client.from("recommendations").delete().eq("league_id", leagueId)).error);
+      checked("cleanup availability rows", (await client.from("league_available_players").delete().eq("league_id", leagueId)).error);
+      checked("cleanup availability scan", (await client.from("league_available_scans").delete().eq("league_id", leagueId)).error);
       checked("cleanup assignments", (await client.from("roster_assignments").delete().eq("league_id", leagueId)).error);
       checked("cleanup membership", (await client.from("league_memberships").delete().eq("league_id", leagueId)).error);
       checked("cleanup roster", (await client.from("rosters").delete().eq("league_id", leagueId)).error);
       checked("cleanup league", (await client.from("leagues").delete().eq("id", leagueId)).error);
-      checked("cleanup snapshots", (await client.from("player_snapshots").delete().in("player_id", [starterId, benchId])).error);
-      checked("cleanup evidence", (await client.from("evidence").delete().in("player_id", [starterId, benchId])).error);
-      checked("cleanup players", (await client.from("players").delete().in("id", [starterId, benchId])).error);
+      checked("cleanup snapshots", (await client.from("player_snapshots").delete().in("player_id", [starterId, benchId, availableId])).error);
+      checked("cleanup evidence", (await client.from("evidence").delete().in("player_id", [starterId, benchId, availableId])).error);
+      checked("cleanup players", (await client.from("players").delete().in("id", [starterId, benchId, availableId])).error);
       checked("cleanup workspace membership", (await client.from("workspace_members").delete().eq("workspace_id", workspaceId)).error);
       checked("cleanup workspace", (await client.from("workspaces").delete().eq("id", workspaceId)).error);
       if (userId) checked("cleanup user", (await client.auth.admin.deleteUser(userId)).error);

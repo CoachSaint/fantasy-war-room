@@ -3,20 +3,26 @@
 -- collection at observed_at; fresh_until prevents stale addability claims.
 create table if not exists public.league_available_players (
   league_id uuid not null references public.leagues(id) on delete cascade,
+  scan_id uuid not null,
   player_id uuid not null references public.players(id) on delete cascade,
   provider_player_key text not null check (provider_player_key ~ '^[0-9]+[.]p[.][0-9]+$'),
+  provider_status text,
   observed_at timestamptz not null,
   fresh_until timestamptz not null,
-  primary key (league_id, player_id),
-  unique (league_id, provider_player_key),
+  primary key (league_id, scan_id, player_id),
+  unique (league_id, scan_id, provider_player_key),
   check (fresh_until > observed_at)
 );
+
+alter table public.roster_assignments
+  add column if not exists provider_status text;
 
 create index if not exists idx_league_available_fresh
   on public.league_available_players (league_id, fresh_until desc);
 
 create table if not exists public.league_available_scans (
   league_id uuid primary key references public.leagues(id) on delete cascade,
+  scan_id uuid not null unique,
   observed_at timestamptz not null,
   fresh_until timestamptz not null,
   candidates_count int not null check (candidates_count between 0 and 200),

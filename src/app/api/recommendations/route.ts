@@ -19,6 +19,8 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
     ? row.payload as Record<string, unknown> : {};
   const projectedPoints = payload.projectedPoints && typeof payload.projectedPoints === "object" && !Array.isArray(payload.projectedPoints)
     ? payload.projectedPoints as Record<string, unknown> : null;
+  const availabilitySourceUrl = typeof payload.availabilitySourceUrl === "string" ? payload.availabilitySourceUrl : "";
+  const validAvailabilityUrl = availabilitySourceUrl.startsWith("https://fantasysports.yahooapis.com/fantasy/v2/league/");
   return {
     id: String(row.id),
     kind: row.kind as Recommendation["kind"],
@@ -30,6 +32,9 @@ function formatRecommendation(row: Record<string, unknown>): Recommendation {
       ? { confidenceMeaning: payload.confidenceMeaning } : {}),
     ...(projectedPoints && Number.isFinite(projectedPoints.recommended) && Number.isFinite(projectedPoints.current)
       ? { projectedPoints: { recommended: Number(projectedPoints.recommended), current: Number(projectedPoints.current) } } : {}),
+    ...(validAvailabilityUrl && typeof payload.availabilityObservedAt === "string" && Number.isFinite(Date.parse(payload.availabilityObservedAt))
+      ? { availability: { sourceUrl: availabilitySourceUrl, observedAt: payload.availabilityObservedAt,
+          truncated: payload.availabilityTruncated === true } } : {}),
     headline: String(row.headline),
     reasonCodes: Array.isArray(row.reason_codes) ? row.reason_codes.map(String) : [],
     evidenceIds: Array.isArray(row.evidence_ids) ? row.evidence_ids.map(String) : [],

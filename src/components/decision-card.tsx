@@ -146,6 +146,12 @@ export function DecisionCard({ item, evidence = [], demo = false }: { item: Reco
             {item.projectedPoints && (
               <div className="muted">Week forecast under imported league scoring: {item.projectedPoints.recommended.toFixed(1)} vs {item.projectedPoints.current.toFixed(1)} points.</div>
             )}
+            {item.availability && (
+              <div className="muted">
+                {`Yahoo league availability checked ${new Date(item.availability.observedAt).toLocaleString()}.`}
+                {item.availability.truncated ? " Candidate scan was limited to the first 200 players." : ""}
+              </div>
+            )}
             {itemEvidences.length > 0 ? (
               itemEvidences.map((ev) => (
                 <div key={ev.id} style={{ borderLeft: "2px solid var(--good)", paddingLeft: 8 }}>

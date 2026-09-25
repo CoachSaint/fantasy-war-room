@@ -98,6 +98,7 @@ export interface Recommendation {
   /** Present when the number describes evidence coverage rather than a calibrated outcome probability. */
   confidenceMeaning?: "heuristic_source_coverage_not_outcome_probability";
   projectedPoints?: { recommended: number; current: number };
+  availability?: { sourceUrl: string; observedAt: string; truncated: boolean };
   headline: string;
   reasonCodes: string[];
   evidenceIds: string[];

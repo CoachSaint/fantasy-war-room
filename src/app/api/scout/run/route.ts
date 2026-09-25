@@ -8,6 +8,7 @@ import { sleeper } from "@/lib/data/sleeper";
 import { materializeGlobalNflverse, materializeSleeperProjections, ScoutMaterializationError } from "@/lib/services/scout-materializer";
 import { materializeYahooLineupForLeague, YahooLineupError } from "@/lib/services/yahoo-lineup";
 import { materializeDailyBriefForLeague, DailyBriefError } from "@/lib/services/daily-brief";
+import { materializeYahooWaiversForLeague, YahooWaiverError } from "@/lib/services/yahoo-waivers";
 
 export const dynamic = "force-dynamic";
 
@@ -230,6 +231,38 @@ async function handleScoutRun(request: Request) {
     failureCode ??= code;
     steps.push(step("feature_scoring", "failed", scoringStart, 0, code));
     steps.push(step("recommendation_materialization", "failed", scoringStart, recommendationsMaterialized, code));
+  }
+  const waiverStart = Date.now();
+  if (!currentYahooLeagueIds.length) {
+    steps.push(step("waiver_scoring", "skipped", waiverStart, 0, "current_yahoo_league_unavailable"));
+    steps.push(step("waiver_materialization", "skipped", waiverStart, 0, "current_yahoo_league_unavailable"));
+  } else {
+    try {
+      let candidatesScored = 0;
+      let completedLeagues = 0;
+      let waiversInserted = 0;
+      const skippedReasons: string[] = [];
+      for (const leagueId of currentYahooLeagueIds) {
+        const result = await materializeYahooWaiversForLeague(adminClient, leagueId);
+        if (result.status === "skipped") {
+          skippedReasons.push(result.reason || "waiver_context_unavailable");
+          continue;
+        }
+        completedLeagues += 1;
+        candidatesScored += result.candidatesScored;
+        waiversInserted += result.recommendationsInserted;
+      }
+      recommendationsMaterialized += waiversInserted;
+      steps.push(step("waiver_scoring", candidatesScored ? "success" : "skipped", waiverStart,
+        candidatesScored, candidatesScored ? undefined : skippedReasons[0] || "waiver_projection_unavailable"));
+      steps.push(step("waiver_materialization", completedLeagues ? "success" : "skipped", waiverStart,
+        waiversInserted, completedLeagues ? undefined : skippedReasons[0] || "waiver_context_unavailable"));
+    } catch (error) {
+      const code = error instanceof YahooWaiverError ? error.code : "waiver_materialization_failed";
+      failureCode ??= code;
+      steps.push(step("waiver_scoring", "failed", waiverStart, 0, code));
+      steps.push(step("waiver_materialization", "failed", waiverStart, 0, code));
+    }
   }
   const diffStart = Date.now();
   steps.push(step("snapshot_diff", "skipped", diffStart, 0, "league_baseline_required"));
